@@ -1,16 +1,17 @@
 from .crypto_pomes import (
-    CRYPTO_HASH_ALGORITHM, crypto_hash
+    CRYPTO_HASH_ALGORITHM, crypto_hash,
 )
 from .crypto_pkcs7 import (
-    Pkcs7Data
+    Pkcs7Data,
 )
 
 __all__ = [
     # crypto_pomes
-    CRYPTO_HASH_ALGORITHM, crypto_hash,
+    "CRYPTO_HASH_ALGORITHM", "crypto_hash",
     # crypto_pkcs7
-    Pkcs7Data
+    "Pkcs7Data",
 ]
 
-__version__ = "0.1.3"
-__version_info__ = (0, 1, 3)
+from importlib.metadata import version
+__version__ = version("pypomes_crypto")
+__version_info__ = tuple(int(i) for i in __version__.split(".") if i.isdigit())

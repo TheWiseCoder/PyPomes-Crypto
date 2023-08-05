@@ -1,12 +1,12 @@
 import hashlib
-import os
+from pathlib import Path
 from typing import Final
 from pypomes_core import APP_PREFIX, env_get_str
 
 CRYPTO_HASH_ALGORITHM: Final[str] = env_get_str(f"{APP_PREFIX}_DEFAULT_HASH_ALGORITHM", "sha256")
 
 
-def crypto_hash(msg: str | bytes, alg: str = CRYPTO_HASH_ALGORITHM) -> bytes:
+def crypto_hash(msg: Path | str | bytes, alg: str = CRYPTO_HASH_ALGORITHM) -> bytes:
     """
     Compute the hash of *msg*, using the algorithm specified in *alg*.
 
@@ -25,10 +25,10 @@ def crypto_hash(msg: str | bytes, alg: str = CRYPTO_HASH_ALGORITHM) -> bytes:
         # argument is type 'bytes'
         hasher.update(msg)
 
-    elif os.path.isfile(msg):
+    elif Path.is_file(Path(msg)):
         # argument is the path to a file
         buf_size: int = 128 * 1024
-        with open(msg, "rb") as f:
+        with Path.open(Path(msg), "rb") as f:
             while True:
                 file_bytes: bytes = f.read(buf_size)
                 if not file_bytes:

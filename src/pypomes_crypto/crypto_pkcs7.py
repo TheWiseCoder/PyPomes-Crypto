@@ -1,7 +1,11 @@
 from asn1crypto import cms
 from datetime import datetime
-from cryptography import x509
 from cryptography.hazmat.primitives.serialization import pkcs7, Encoding, PublicFormat
+from pathlib import Path
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from cryptography import x509
 
 
 class Pkcs7Data:
@@ -17,7 +21,7 @@ class Pkcs7Data:
     public_key: bytes                    # the serialized public key (in PEM format)
     cert_chain: list[bytes]              # the serialized X509 certificate chain (in PEM format)
 
-    def __init__(self, p7s_file: str | bytes):
+    def __init__(self, p7s_file: str | bytes) -> None:
         """
         Instantiate the PKCS#7 crypto class, and extract the relevant data.
 
@@ -26,17 +30,15 @@ class Pkcs7Data:
         # is the input argument a file path ?
         if isinstance(p7s_file, str):
             # yes, load pkcs#7 data from file
-            with open(p7s_file, "rb") as f:
+            with Path.open(Path(p7s_file), "rb") as f:
                 p7s_bytes: bytes = f.read()
         else:
             # no, it holds the pkcs#7 data
             p7s_bytes = p7s_file
 
         # extract the certificate chain and serialize it in PEM format
-        self.cert_chain = []
         certs: list[x509.Certificate] = pkcs7.load_der_pkcs7_certificates(p7s_bytes)
-        for cert in certs:
-            self.cert_chain.append(cert.public_bytes(Encoding.PEM))
+        self.cert_chain = [cert.public_bytes(Encoding.PEM) for cert in certs]
 
         #  extract the public key and serialize it in PEM format
         cert: x509.Certificate = certs[-1]
