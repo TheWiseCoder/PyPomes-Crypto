@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pypomes_crypto"
-version = "0.1.5"
+version = "0.2.1"
 authors = [
   { name="GT Nunes", email="wisecoder01@gmail.com" }
 ]
@@ -21,10 +21,12 @@ classifiers = [
 dependencies = [
     "asn1crypto>=1.5.1",
     "cryptography>=41.0.2",
-    "pip>=23.3.1",
-    "pypomes_core>=0.2.3",
+    "pip>=24.0",
+    "pycryptodome>=3.20.0",
+    "pyHanko>=0.23.0",
+    "pypomes_core>=0.6.9",
     "setuptools>=68.0.0",
-    "wheel>=0.41.0"
+    "wheel>=0.42.0"
 ]
 
 [project.urls]
