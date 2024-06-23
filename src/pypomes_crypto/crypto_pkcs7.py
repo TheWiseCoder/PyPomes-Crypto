@@ -3,24 +3,28 @@ from datetime import datetime
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import pkcs7, Encoding, PublicFormat
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+from pathlib import Path
 from pypomes_core import file_get_data
 
-from .crypto_common import crypto_compute_hash
+from . import crypto_compute_hash
 
 
 class CryptoPkcs7:
-    """Python code to extract relevant data from a PKCS#7 signature file in DER format."""
+    """
+    Python code to extract relevant data from a PKCS#7 signature file in DER format.
+    """
 
-    def __init__(self, p7s_file: str | bytes, p7s_payload: str | bytes = None) -> None:
+    def __init__(self, p7s_file: Path | str | bytes,
+                 p7s_payload: str | bytes = None) -> None:
         """
         Instantiate the PKCS#7 crypto class, and extract the relevant data.
 
         If a detached payload is specified in *p7s_payload*, it is validated against the
-        payload hash information.
+        payload's declared hash value.
 
         :param p7s_file: path for a PKCS#7 file in DER format, or the bytes thereof
         :param p7s_payload: a payload file path, or the bytes thereof
-        :raises ValueError: if the payload is inconsistent with its hash value
+        :raises ValueError: if the payload is inconsistent with its declared hash value
         """
         # instance attributes
         # self.payload: bytes                - the embedded payload
@@ -33,11 +37,12 @@ class CryptoPkcs7:
         # self.cert_chain: list[bytes]       - the serialized X509 certificate chain (in PEM format)
 
         # obtain the PKCS#7 file data
-        p7s_bytes: bytes = file_get_data(p7s_file)
+        p7s_bytes: bytes = file_get_data(file_data=p7s_file)
 
         # extract the certificate chain and serialize it in PEM format
-        certs: list[x509.Certificate] = pkcs7.load_der_pkcs7_certificates(p7s_bytes)
-        self.cert_chain: list[bytes] = [cert.public_bytes(Encoding.PEM) for cert in certs]
+        certs: list[x509.Certificate] = pkcs7.load_der_pkcs7_certificates(data=p7s_bytes)
+        self.cert_chain: list[bytes] = [cert.public_bytes(encoding=Encoding.PEM)
+                                        for cert in certs]
 
         #  extract the public key and serialize it in PEM format
         cert: x509.Certificate = certs[-1]
@@ -45,10 +50,11 @@ class CryptoPkcs7:
         #   DSAPublicKey, RSAPublicKey, EllipticCurvePublicKey,
         #   Ed25519PublicKey, Ed448PublicKey, X25519PublicKey, X448PublicKey
         public_key: RSAPublicKey = cert.public_key()
-        self.public_key: bytes = public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+        self.public_key: bytes = public_key.public_bytes(encoding=Encoding.PEM,
+                                                         format=PublicFormat.SubjectPublicKeyInfo)
 
         # extract the needed structures
-        content_info: cms.ContentInfo = cms.ContentInfo.load(p7s_bytes)
+        content_info: cms.ContentInfo = cms.ContentInfo.load(encoded_data=p7s_bytes)
         signed_data: cms.SignedData = content_info["content"]
         signer_info: cms.SignerInfo = signed_data["signer_infos"][0]
 
@@ -68,9 +74,10 @@ class CryptoPkcs7:
         # has a detached payload been specified ?
         if p7s_payload:
             # yes, load it
-            self.payload: bytes = file_get_data(p7s_payload)
+            self.payload: bytes = file_get_data(file_data=p7s_payload)
             # validate it
-            payload_hash: bytes = crypto_compute_hash(self.payload, self.hash_algorithm)
+            payload_hash: bytes = crypto_compute_hash(msg=self.payload,
+                                                      alg=self.hash_algorithm)
             if payload_hash != self.payload_hash:
                 raise ValueError("The payload's hash value does not match its content")
         else:
