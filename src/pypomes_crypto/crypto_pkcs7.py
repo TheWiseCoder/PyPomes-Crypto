@@ -6,9 +6,6 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from pathlib import Path
 from pypomes_core import file_get_data
 
-from . import crypto_compute_hash
-
-
 class CryptoPkcs7:
     """
     Python code to extract relevant data from a PKCS#7 signature file in DER format.
@@ -74,6 +71,7 @@ class CryptoPkcs7:
         # has a detached payload been specified ?
         if p7s_payload:
             # yes, load it
+            from . import crypto_compute_hash
             self.payload: bytes = file_get_data(file_data=p7s_payload)
             # validate it
             payload_hash: bytes = crypto_compute_hash(msg=self.payload,
