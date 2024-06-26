@@ -1,6 +1,7 @@
 import hashlib
 import sys
 from asn1crypto.x509 import Certificate
+from collections.abc import Iterable
 from Crypto.Hash import SHA256
 from Crypto.Hash.SHA256 import SHA256Hash
 from Crypto.PublicKey.RSA import import_key, RsaKey
@@ -60,7 +61,7 @@ def crypto_validate_p7s(errors: list[str],
             rsa_key: RsaKey = import_key(extern_key=pkcs7.public_key)
             sig_scheme: PKCS115_SigScheme = pkcs1_15.new(rsa_key=rsa_key)
             sha256_hash: SHA256Hash = SHA256.new(data=pkcs7.payload)
-            # TODO: fix the verification process
+            # TODO @gtnunes: fix the verification process
             sig_scheme.verify(msg_hash=sha256_hash,
                               signature=pkcs7.signature)
             result = True
@@ -101,9 +102,12 @@ def crypto_validate_pdf(errors: list[str] | None,
     pdf_reader: PdfFileReader = PdfFileReader(stream=BytesIO(initial_bytes=pdf_bytes))
 
     # obtain the validation context
-    cert_bytes: bytes = file_get_data(file_data=certs_file)
-    cert: Certificate = load_certs_from_pemder_data(cert_data_bytes=cert_bytes)
-    validation_context = ValidationContext(trust_roots=cert)  # 'cert' might be None
+    certs: Iterable[Certificate] | None = None
+    if certs_file:
+        certs_bytes: bytes = file_get_data(file_data=certs_file)
+        if certs_bytes:
+            certs = load_certs_from_pemder_data(cert_data_bytes=certs_bytes)
+    validation_context = ValidationContext(trust_roots=certs)
 
     # obtain the list of digital signatures
     signatures: list[EmbeddedPdfSignature] = pdf_reader.embedded_signatures
@@ -119,7 +123,7 @@ def crypto_validate_pdf(errors: list[str] | None,
                 error = "The certificate used has been revoked"
             elif not status.intact:
                 error = "The signature block is not intact"
-            elif not status.trusted and cert:
+            elif not status.trusted and certs:
                 error = "The certificate used is not trusted"
             elif not status.seed_value_ok:
                 error = "A bad seed value found"

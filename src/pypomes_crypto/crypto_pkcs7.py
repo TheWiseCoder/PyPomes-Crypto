@@ -10,6 +10,15 @@ class CryptoPkcs7:
     """
     Python code to extract relevant data from a PKCS#7 signature file in DER format.
     """
+    # instance attributes
+    # self.payload: bytes                - the embedded payload
+    # self.payload_hash: bytes           - the payload hash
+    # self.hash_algorithm: str           - the algorithm used to calculate the payload hash
+    # self.signature: bytes              - the digital signature
+    # self.signature_algorithm: str      - the algorithm used to generate the signature
+    # self.signature_timestamp: datetime - the signature's timestamp
+    # self.public_key: bytes             - the serialized public key (in PEM format)
+    # self.cert_chain: list[bytes]       - the serialized X509 certificate chain (in PEM format)
 
     def __init__(self, p7s_file: Path | str | bytes,
                  p7s_payload: str | bytes = None) -> None:
@@ -23,16 +32,6 @@ class CryptoPkcs7:
         :param p7s_payload: a payload file path, or the bytes thereof
         :raises ValueError: if the payload is inconsistent with its declared hash value
         """
-        # instance attributes
-        # self.payload: bytes                - the embedded payload
-        # self.payload_hash: bytes           - the payload hash
-        # self.hash_algorithm: str           - the algorithm used to calculate the payload hash
-        # self.signature: bytes              - the digital signature
-        # self.signature_algorithm: str      - the algorithm used to generate the signature
-        # self.signature_timestamp: datetime - the signature's timestamp
-        # self.public_key: bytes             - the serialized public key (in PEM format)
-        # self.cert_chain: list[bytes]       - the serialized X509 certificate chain (in PEM format)
-
         # obtain the PKCS#7 file data
         p7s_bytes: bytes = file_get_data(file_data=p7s_file)
 
