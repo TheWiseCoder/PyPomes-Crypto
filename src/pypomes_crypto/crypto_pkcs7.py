@@ -1,26 +1,33 @@
 from asn1crypto import cms
 from datetime import datetime
-from cryptography import x509
-from cryptography.hazmat.primitives.serialization import pkcs7, Encoding, PublicFormat
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.hazmat.primitives.serialization.pkcs7 import load_der_pkcs7_certificates
+from cryptography.x509 import Certificate
 from pathlib import Path
 from pypomes_core import file_get_data
 
 class CryptoPkcs7:
     """
-    Python code to extract relevant data from a PKCS#7 signature file in DER format.
+    Python code to extract relevant data from a PKCS#7 signature file in DER or PEM format.
     """
     # instance attributes
-    # self.payload: bytes                - the embedded payload
-    # self.payload_hash: bytes           - the payload hash
-    # self.hash_algorithm: str           - the algorithm used to calculate the payload hash
-    # self.signature: bytes              - the digital signature
-    # self.signature_algorithm: str      - the algorithm used to generate the signature
-    # self.signature_timestamp: datetime - the signature's timestamp
-    # self.public_key: bytes             - the serialized public key (in PEM format)
-    # self.cert_chain: list[bytes]       - the serialized X509 certificate chain (in PEM format)
+    # p7s_bytes: bytes              - the PKCS#7 data
+    # payload: bytes                - the payload (embedded or external)
+    # payload_hash: bytes           - the payload hash
+    # hash_algorithm: str           - the algorithm used to calculate the payload hash
+    # signature: bytes              - the digital signature
+    # signature_algorithm: str      - the algorithm used to generate the signature
+    # signature_timestamp: datetime - the signature's timestamp
+    # public_key: RSAPublicKey      - the RSA public key
+    # public_bytes: bytes           - the serialized public key (in PEM format)
+    # cert_chain: list[bytes]       - the serialized X509 certificate chain (in PEM format)
 
-    def __init__(self, p7s_file: Path | str | bytes,
+    def __init__(self,
+                 p7s_file: Path | str | bytes,
                  p7s_payload: str | bytes = None) -> None:
         """
         Instantiate the PKCS#7 crypto class, and extract the relevant data.
@@ -31,26 +38,26 @@ class CryptoPkcs7:
         :param p7s_file: path for a PKCS#7 file in DER format, or the bytes thereof
         :param p7s_payload: a payload file path, or the bytes thereof
         :raises ValueError: if the payload is inconsistent with its declared hash value
+        :raises InvalidSignature: if the digital signature is invalid
         """
         # obtain the PKCS#7 file data
-        p7s_bytes: bytes = file_get_data(file_data=p7s_file)
+        self.p7s_bytes: bytes = file_get_data(file_data=p7s_file)
 
         # extract the certificate chain and serialize it in PEM format
-        certs: list[x509.Certificate] = pkcs7.load_der_pkcs7_certificates(data=p7s_bytes)
+        certs: list[Certificate] = load_der_pkcs7_certificates(data=self.p7s_bytes)
         self.cert_chain: list[bytes] = [cert.public_bytes(encoding=Encoding.PEM)
                                         for cert in certs]
 
         #  extract the public key and serialize it in PEM format
-        cert: x509.Certificate = certs[-1]
+        cert: Certificate = certs[0]
         # 'cert.public_key()' may return one of:
         #   DSAPublicKey, RSAPublicKey, EllipticCurvePublicKey,
         #   Ed25519PublicKey, Ed448PublicKey, X25519PublicKey, X448PublicKey
-        public_key: RSAPublicKey = cert.public_key()
-        self.public_key: bytes = public_key.public_bytes(encoding=Encoding.PEM,
-                                                         format=PublicFormat.SubjectPublicKeyInfo)
-
+        self.public_key: RSAPublicKey = cert.public_key()
+        self.public_bytes: bytes = self.public_key.public_bytes(encoding=Encoding.PEM,
+                                                                format=PublicFormat.SubjectPublicKeyInfo)
         # extract the needed structures
-        content_info: cms.ContentInfo = cms.ContentInfo.load(encoded_data=p7s_bytes)
+        content_info: cms.ContentInfo = cms.ContentInfo.load(encoded_data=self.p7s_bytes)
         signed_data: cms.SignedData = content_info["content"]
         signer_info: cms.SignerInfo = signed_data["signer_infos"][0]
 
@@ -70,13 +77,37 @@ class CryptoPkcs7:
         # has a detached payload been specified ?
         if p7s_payload:
             # yes, load it
-            from . import crypto_compute_hash
             self.payload: bytes = file_get_data(file_data=p7s_payload)
-            # validate it
-            payload_hash: bytes = crypto_compute_hash(msg=self.payload,
-                                                      alg=self.hash_algorithm)
-            if payload_hash != self.payload_hash:
-                raise ValueError("The payload's hash value does not match its content")
         else:
             # no, extract the embedded payload
             self.payload: bytes = signed_data["encap_content_info"]["content"].native
+
+    def verify_hash(self) -> bool:
+        """
+        Verify whether the declared hash value effectively matches the payload.
+
+        :return: 'True' if the hash value matches the payload, 'False' otherwise
+        """
+        from crypto_pomes import crypto_compute_hash
+        effective_hash: bytes = crypto_compute_hash(msg=self.payload,
+                                                    alg=self.hash_algorithm)
+        return effective_hash == self.payload_hash
+
+    def verify_signature(self) -> bool:
+        """
+        Verify whether the digital signature is valid.
+
+        :return: 'True' if the digital signature is valid, 'False' otherwise
+        """
+        # verify the digital signature
+        result: bool
+        try:
+            self.public_key.verify(signature=self.signature,
+                                   data=self.payload,
+                                   padding=PKCS1v15(),
+                                   algorithm=SHA256())
+            result = True
+        except InvalidSignature:
+            result = False
+
+        return result

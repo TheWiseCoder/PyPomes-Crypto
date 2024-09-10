@@ -1,14 +1,20 @@
 import hashlib
+import pickle
 import sys
 from asn1crypto.x509 import Certificate
 from collections.abc import Iterable
+from contextlib import suppress
 from Crypto.Hash import SHA256
 from Crypto.Hash.SHA256 import SHA256Hash
 from Crypto.PublicKey.RSA import import_key, RsaKey
 from Crypto.Signature import pkcs1_15
 from Crypto.Signature.pkcs1_15 import PKCS115_SigScheme
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from io import BytesIO
 from pathlib import Path
+
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from pyhanko.sign.validation.pdf_embedded import EmbeddedPdfSignature
 from pyhanko_certvalidator import ValidationContext
 from pyhanko.keys import load_certs_from_pemder_data
@@ -16,7 +22,7 @@ from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign.validation import validate_pdf_signature
 from pyhanko.sign.validation.status import PdfSignatureStatus
 from pypomes_core import file_get_data, exc_format, env_get_str, APP_PREFIX
-from typing import Final
+from typing import Any, Final
 
 from .crypto_pkcs7 import CryptoPkcs7
 
@@ -58,7 +64,7 @@ def crypto_validate_p7s(errors: list[str],
         # yes, verify the signature
         try:
             # noinspection PyUnboundLocalVariable
-            rsa_key: RsaKey = import_key(extern_key=pkcs7.public_key)
+            rsa_key: RsaKey = import_key(extern_key=pkcs7.public_bytes)
             sig_scheme: PKCS115_SigScheme = pkcs1_15.new(rsa_key=rsa_key)
             sha256_hash: SHA256Hash = SHA256.new(data=pkcs7.payload)
             # TODO @gtnunes: fix the verification process
@@ -77,7 +83,7 @@ def crypto_validate_p7s(errors: list[str],
 
 def crypto_validate_pdf(errors: list[str] | None,
                         pdf_file: Path | str | bytes,
-                        certs_file:  Path | str | bytes = None) -> bool:
+                        certs_file: Path | str | bytes = None) -> bool:
     """
     Validate the digital signature of a PDF file.
 
@@ -107,14 +113,14 @@ def crypto_validate_pdf(errors: list[str] | None,
         certs_bytes: bytes = file_get_data(file_data=certs_file)
         if certs_bytes:
             certs = load_certs_from_pemder_data(cert_data_bytes=certs_bytes)
-    validation_context = ValidationContext(trust_roots=certs)
+    validation_context: ValidationContext = ValidationContext(trust_roots=certs)
 
     # obtain the list of digital signatures
     signatures: list[EmbeddedPdfSignature] = pdf_reader.embedded_signatures
 
     # were signatures retrieved ?
     if signatures:
-        # yes, verify them
+        # yes, traverse the list verifying them
         for signature in signatures:
             error: str | None = None
             status: PdfSignatureStatus = validate_pdf_signature(embedded_sig=signature,
@@ -133,26 +139,25 @@ def crypto_validate_pdf(errors: list[str] | None,
             # has an error been flagged ?
             if error:
                 # yes, report it
-                result = False
                 if isinstance(errors, list):
                     errors.append(error)
+                result = False
     else:
         # no, report the problem
-        result = False
         if isinstance(errors, list):
             errors.append("The file is not digitally signed")
+        result = False
 
     return result
 
 
-def crypto_compute_hash(msg: Path | str | bytes,
+def crypto_compute_hash(msg: Path | str | bytes | Any,
                         alg: str = CRYPTO_DEFAULT_HASH_ALGORITHM) -> bytes:
     """
     Compute the hash of *msg*, using the algorithm specified in *alg*.
 
-    Return *None* if computing the hash not possible.
-    Supported algorithms: md5, blake2b, blake2s, sha1, sha224, sha256, sha384 sha512,
-    sha3_224, sha3_256, sha3_384, sha3_512, shake_128, shake_256.
+    Supported algorithms: *md5*, *blake2b*, *blake2s*, *sha1*, *sha224*, *sha256*, *sha384*,
+    *sha512*, *sha3_224*, *sha3_256*, *sha3_384*, *sha3_512*, *shake_128*, *shake_256*.
 
     :param msg: the message to calculate the hash for, or a path to a file
     :param alg: the algorithm to use (defaults to an environment-defined value, or to 'sha256')
@@ -164,7 +169,7 @@ def crypto_compute_hash(msg: Path | str | bytes,
     # instantiate the hasher
     hasher = hashlib.new(name=alg.lower())
 
-    # what is the type of the argument ?
+    # what is the type of the message ?
     if isinstance(msg, bytes):
         # argument is type 'bytes'
         hasher.update(msg)
@@ -181,4 +186,35 @@ def crypto_compute_hash(msg: Path | str | bytes,
                 file_bytes = f.read(buf_size)
         result = hasher.digest()
 
+    else:
+        # argument is unknown
+        with suppress(Exception):
+            data: bytes = pickle.dumps(obj=msg)
+            if data:
+                hasher.update(data)
+                result = hasher.digest()
+
     return result
+
+
+def crypto_generate_rsa_keys(key_size: int = 2048) -> (str, str):
+    """
+    Generate and return a matching pair of *RSA* private and public keys.
+
+    The keys are serialized and *UTF-8* decoded to *str*.
+
+    :param key_size: the key size (defaults to 2048 bytes)
+    :return: a matching pair (private_key, public_key) of serialized RSA keys
+    """
+    # generate the private key
+    priv_key: RSAPrivateKey = rsa.generate_private_key(public_exponent=65537,
+                                                       key_size=key_size)
+    priv_serialized: bytes = priv_key.private_bytes(encoding=serialization.Encoding.PEM,
+                                                    format=serialization.PrivateFormat.PKCS8,
+                                                    encryption_algorithm=serialization.NoEncryption())
+    # obtain the matching public key
+    pub_key: RSAPublicKey = priv_key.public_key()
+    pub_serialized: bytes = pub_key.public_bytes(encoding=serialization.Encoding.PEM,
+                                                 format=serialization.PublicFormat.SubjectPublicKeyInfo)
+    # serialize and return the keys
+    return priv_serialized.decode(), pub_serialized.decode()
