@@ -6,13 +6,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pypomes_crypto"
-version = "0.2.8"
+version = "0.3.2"
 authors = [
   { name="GT Nunes", email="wisecoder01@gmail.com" }
 ]
 description = "A collection of Python pomes, penyeach (cryptography modules)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -20,12 +20,12 @@ classifiers = [
 ]
 dependencies = [
     "asn1crypto>=1.5.1",
-    "cryptography>=43.0.1",
-    "pip>=24.2",
-    "pycryptodome>=3.20.0",
-    "pyHanko>=0.25.1",
-    "pypomes_core>=1.4.9",
-    "setuptools>=74.1.2",
+    "cryptography>=43.0.3",
+    "pip>=24.3.1",
+    "pycryptodome>=3.21.0",
+    "pyHanko>=0.25.2",
+    "pypomes_core>=1.6.2",
+    "setuptools>=75.3.0",
     "wheel>=0.44.0"
 ]
 

@@ -197,11 +197,9 @@ def crypto_compute_hash(msg: Path | str | bytes | Any,
     return result
 
 
-def crypto_generate_rsa_keys(key_size: int = 2048) -> (str, str):
+def crypto_generate_rsa_keys(key_size: int = 2048) -> (bytes, bytes):
     """
     Generate and return a matching pair of *RSA* private and public keys.
-
-    The keys are serialized and *UTF-8* decoded to *str*.
 
     :param key_size: the key size (defaults to 2048 bytes)
     :return: a matching pair (private_key, public_key) of serialized RSA keys
@@ -216,5 +214,5 @@ def crypto_generate_rsa_keys(key_size: int = 2048) -> (str, str):
     pub_key: RSAPublicKey = priv_key.public_key()
     pub_serialized: bytes = pub_key.public_bytes(encoding=serialization.Encoding.PEM,
                                                  format=serialization.PublicFormat.SubjectPublicKeyInfo)
-    # serialize and return the keys
-    return priv_serialized.decode(), pub_serialized.decode()
+    # return the keys
+    return priv_serialized, pub_serialized

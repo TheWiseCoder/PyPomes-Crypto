@@ -10,6 +10,7 @@ from cryptography.x509 import Certificate
 from pathlib import Path
 from pypomes_core import file_get_data
 
+
 class CryptoPkcs7:
     """
     Python code to extract relevant data from a PKCS#7 signature file in DER or PEM format.
