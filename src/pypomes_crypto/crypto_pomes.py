@@ -4,27 +4,29 @@ import sys
 from asn1crypto.x509 import Certificate
 from collections.abc import Iterable
 from contextlib import suppress
+from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
 from Crypto.Hash.SHA256 import SHA256Hash
 from Crypto.PublicKey.RSA import import_key, RsaKey
 from Crypto.Signature import pkcs1_15
 from Crypto.Signature.pkcs1_15 import PKCS115_SigScheme
+from Crypto.Util.Padding import pad, unpad
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from io import BytesIO
 from pathlib import Path
-
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from pyhanko.sign.validation.pdf_embedded import EmbeddedPdfSignature
 from pyhanko_certvalidator import ValidationContext
 from pyhanko.keys import load_certs_from_pemder_data
 from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign.validation import validate_pdf_signature
 from pyhanko.sign.validation.status import PdfSignatureStatus
-from pypomes_core import file_get_data, exc_format, env_get_str, APP_PREFIX
+from pypomes_core import (
+    APP_PREFIX,
+    file_get_data, exc_format, env_get_str
+)
 from typing import Any, Final
-
-from .crypto_pkcs7 import CryptoPkcs7
 
 CRYPTO_DEFAULT_HASH_ALGORITHM: Final[str] = \
     env_get_str(key=f"{APP_PREFIX}_CRYPTO_DEFAULT_HASH_ALGORITHM",
@@ -44,20 +46,24 @@ def crypto_validate_p7s(errors: list[str],
     :param errors: incidental error messages
     :param p7s_file: a p7s file path, or the bytes thereof
     :param p7s_payload: a payload file path, or the bytes thereof
-    :return: 'True' if the input data are consistent, 'False' otherwise
+    :return: *True* if the input data are consistent, *False* otherwise
     """
+    # import
+    from . import crypto_pkcs7
+
     # instantiate the return variable
     result: bool = False
 
     # instantiate the PKCS7 object
-    pkcs7: CryptoPkcs7 | None = None
+    pkcs7: crypto_pkcs7.CryptoPkcs7 | None = None
     try:
-        pkcs7 = CryptoPkcs7(p7s_file=p7s_file,
-                            p7s_payload=p7s_payload)
+        pkcs7 = crypto_pkcs7.CryptoPkcs7(p7s_file=p7s_file,
+                                         p7s_payload=p7s_payload)
     except Exception as e:
         if isinstance(errors, list):
-            errors.append(exc_format(exc=e,
-                                     exc_info=sys.exc_info()))
+            exc_error: str = exc_format(exc=e,
+                                        exc_info=sys.exc_info())
+            errors.append(exc_error)
 
     # was the PKCS7 object instanciated ?
     if pkcs7:
@@ -98,7 +104,7 @@ def crypto_validate_pdf(errors: list[str] | None,
     :param errors: incidental error messages
     :param pdf_file: a PDF file path, or the PDF file bytes
     :param certs_file: a path to a file containing a PEM/DER-encoded certificate chain, or the bytes thereof
-    :return: 'True' if the input data are consistent, 'False' otherwise
+    :return: *True* if the input data are consistent, *False* otherwise
     """
     # initialize the return variable
     result: bool = True
@@ -156,10 +162,15 @@ def crypto_compute_hash(msg: Path | str | bytes | Any,
     """
     Compute the hash of *msg*, using the algorithm specified in *alg*.
 
+    The nature of *msg* dependes on its data type:
+        - type *bytes*: *msg* holds the data (used as is)
+        - type *str*: *msg* holds the data (used as utf8-encoded)
+        - type *Path*: *msg* is a path to a file holding the data
+
     Supported algorithms: *md5*, *blake2b*, *blake2s*, *sha1*, *sha224*, *sha256*, *sha384*,
     *sha512*, *sha3_224*, *sha3_256*, *sha3_384*, *sha3_512*, *shake_128*, *shake_256*.
 
-    :param msg: the message to calculate the hash for, or a path to a file
+    :param msg: the message to calculate the hash for
     :param alg: the algorithm to use (defaults to an environment-defined value, or to 'sha256')
     :return: the hash value obtained, or 'None' if the hash could not be computed
     """
@@ -175,7 +186,12 @@ def crypto_compute_hash(msg: Path | str | bytes | Any,
         hasher.update(msg)
         result = hasher.digest()
 
-    elif isinstance(msg, Path | str):
+    elif isinstance(msg, str):
+        # argument is type 'str'
+        hasher.update(msg.encode())
+        result = hasher.digest()
+
+    elif isinstance(msg, Path):
         # argument is a file path
         buf_size: int = 128 * 1024
         file_path: Path = Path(msg)
@@ -216,3 +232,103 @@ def crypto_generate_rsa_keys(key_size: int = 2048) -> (bytes, bytes):
                                                  format=serialization.PublicFormat.SubjectPublicKeyInfo)
     # return the keys
     return priv_serialized, pub_serialized
+
+
+def crypto_encrypt(errors: list[str] | None,
+                   plaintext: Path | str | bytes,
+                   key: bytes) -> bytes:
+    """
+    Symmetrically encrypt *plaintext* using the given *key*.
+
+    The *ECB* (Electronic CodeBook) symmetric block cipher is used. This is the most basic but also
+    the weakest mode of operation available. Its use should be restricted to non-critical messages,
+    or otherwise should be combined with a stronger cipher.
+
+    It should also be noted that this cipher does not provides guarantees over the *integrity* of the message
+    (i.e., it does not allow the receiver to establish whether the *ciphertext* was modified in transit).
+    For a top-of-the-line symmetric block cipher, providing quality message *confidentiality* and *integrity*,
+    consider using *crypto_aes_encrypt()/crypto_aes_decrypt()* in this package.
+
+    The nature of *plaintext* depends on its data type:
+      - type *bytes*: *plaintext* holds the data (used as is)
+      - type *str*: *plaintext* holds the data (used as utf8-encoded)
+      - type *Path*: *plaintext* is a path to a file holding the data
+
+    The mandatory *key* must be 16, 24, or 32 bytes long.
+
+    :param errors: incidental error messages
+    :param plaintext: the message to encrypt
+    :param key: the cryptographic key (byte length must be 16, 24 or 32)
+    :return: the encrypted message, or *None* on error
+    """
+    # initialize the return variable
+    result: bytes | None = None
+
+    # obtain the data for encryption
+    plaindata: bytes = file_get_data(file_data=plaintext)
+
+    # build the cipher
+    cipher: AES = AES.new(key=key,
+                          mode=AES.MODE_ECB)
+    # encrypt the data
+    try:
+        result = cipher.encrypt(plaintext=pad(data_to_pad=plaindata,
+                                              block_size=AES.block_size))
+    except Exception as e:
+        if isinstance(errors, list):
+            exc_error: str = exc_format(exc=e,
+                                        exc_info=sys.exc_info())
+            errors.append(exc_error)
+
+    return result
+
+
+def crypto_decrypt(errors: list[str] | None,
+                   ciphertext: Path | str | bytes,
+                   key: bytes) -> bytes:
+    """
+    Symmetrically decrypt *ciphertext* using the given *key*.
+
+    It is assumed that the *ECB* (Electronic CodeBook) symmetric block cipher was used to generate *ciphertext*.
+    This is the most basic but also the weakest mode of operation available. Its use should be restricted to
+    non-critical messages, or otherwise should be combined with a stronger cipher.
+
+    It should also be noted that this cipher does not provides guarantees over the *integrity* of the message
+    (i.e., it does not allow the receiver to establish whether *ciphertext* was modified in transit).
+    For a top-of-the-line symmetric block cipher, providing quality message *confidentiality* and *integrity*,
+    consider using *crypto_aes_encrypt()/crypto_aes_decrypt()* in this package.
+
+    The nature of *ciphertext* depends on its data type:
+      - type *bytes*: *ciphertext* holds the data (used as is)
+      - type *str*: *ciphertext* holds the data (used as utf8-encoded)
+      - type *Path*: *ciphertext* is a path to a file holding the data
+
+     The *key* must be the same one used to generate *ciphertext*.
+
+    :param errors: incidental error messages
+    :param ciphertext: the message to decrypt
+    :param key: the cryptographic key
+    :return: the decrypted message, or *None* on error
+    """
+    # initialize the return variable
+    result: bytes | None = None
+
+    # obtain the data for decryption
+    cipherdata: bytes = file_get_data(file_data=ciphertext)
+
+    # build the cipher
+    cipher: AES = AES.new(key=key,
+                          mode=AES.MODE_ECB)
+    # decrypt the data
+    try:
+        # HAZARD: the misnamed parameter ('plaintext') is left unnamed
+        plaindata: bytes = cipher.decrypt(cipherdata)
+        result = unpad(padded_data=plaindata,
+                       block_size=AES.block_size)
+    except Exception as e:
+        if isinstance(errors, list):
+            exc_error: str = exc_format(exc=e,
+                                        exc_info=sys.exc_info())
+            errors.append(exc_error)
+
+    return result
