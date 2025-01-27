@@ -7,7 +7,7 @@ from .crypto_pkcs7 import (
 )
 from .crypto_pomes import (
     CRYPTO_DEFAULT_HASH_ALGORITHM, crypto_validate_p7s, crypto_validate_pdf,
-    crypto_compute_hash, crypto_generate_rsa_keys,
+    crypto_hash, crypto_generate_rsa_keys,
     crypto_encrypt, crypto_decrypt
 )
 
@@ -19,7 +19,7 @@ __all__ = [
     "CryptoPkcs7",
     # crypto_pomes
     "CRYPTO_DEFAULT_HASH_ALGORITHM", "crypto_validate_p7s", "crypto_validate_pdf",
-    "crypto_compute_hash", "crypto_generate_rsa_keys",
+    "crypto_hash", "crypto_generate_rsa_keys",
     "crypto_encrypt", "crypto_decrypt"
 ]
 

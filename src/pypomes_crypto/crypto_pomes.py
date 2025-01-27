@@ -157,8 +157,8 @@ def crypto_validate_pdf(errors: list[str] | None,
     return result
 
 
-def crypto_compute_hash(msg: Path | str | bytes | Any,
-                        alg: str = CRYPTO_DEFAULT_HASH_ALGORITHM) -> bytes:
+def crypto_hash(msg: Path | str | bytes | Any,
+                alg: str = CRYPTO_DEFAULT_HASH_ALGORITHM) -> bytes:
     """
     Compute the hash of *msg*, using the algorithm specified in *alg*.
 
@@ -213,7 +213,7 @@ def crypto_compute_hash(msg: Path | str | bytes | Any,
     return result
 
 
-def crypto_generate_rsa_keys(key_size: int = 2048) -> (bytes, bytes):
+def crypto_generate_rsa_keys(key_size: int = 2048) -> tuple[bytes, bytes]:
     """
     Generate and return a matching pair of *RSA* private and public keys.
 
@@ -223,15 +223,15 @@ def crypto_generate_rsa_keys(key_size: int = 2048) -> (bytes, bytes):
     # generate the private key
     priv_key: RSAPrivateKey = rsa.generate_private_key(public_exponent=65537,
                                                        key_size=key_size)
-    priv_serialized: bytes = priv_key.private_bytes(encoding=serialization.Encoding.PEM,
-                                                    format=serialization.PrivateFormat.PKCS8,
-                                                    encryption_algorithm=serialization.NoEncryption())
-    # obtain the matching public key
+    result_priv: bytes = priv_key.private_bytes(encoding=serialization.Encoding.PEM,
+                                                format=serialization.PrivateFormat.PKCS8,
+                                                encryption_algorithm=serialization.NoEncryption())
+    # generate the matching public key
     pub_key: RSAPublicKey = priv_key.public_key()
-    pub_serialized: bytes = pub_key.public_bytes(encoding=serialization.Encoding.PEM,
-                                                 format=serialization.PublicFormat.SubjectPublicKeyInfo)
-    # return the keys
-    return priv_serialized, pub_serialized
+    result_pub: bytes = pub_key.public_bytes(encoding=serialization.Encoding.PEM,
+                                             format=serialization.PublicFormat.SubjectPublicKeyInfo)
+    # return the key pair
+    return result_priv, result_pub
 
 
 def crypto_encrypt(errors: list[str] | None,

@@ -89,9 +89,9 @@ class CryptoPkcs7:
 
         :return: 'True' if the hash value matches the payload, 'False' otherwise
         """
-        from crypto_pomes import crypto_compute_hash
-        effective_hash: bytes = crypto_compute_hash(msg=self.payload,
-                                                    alg=self.hash_algorithm)
+        from crypto_pomes import crypto_hash
+        effective_hash: bytes = crypto_hash(msg=self.payload,
+                                            alg=self.hash_algorithm)
         return effective_hash == self.payload_hash
 
     def verify_signature(self) -> bool:
