@@ -1,6 +1,6 @@
 from .crypto_aes import (
     CRYPTO_DEFAULT_SYMMETRIC_MODE, SymmetricMode,
-    crypto_aes_encrypt, crypto_aes_decrypt
+    crypto_aes_encrypt, crypto_aes_decrypt, crypto_aes_get_nonce
 )
 from .crypto_pkcs7 import (
     CryptoPkcs7
@@ -14,7 +14,7 @@ from .crypto_pomes import (
 __all__ = [
     # crypto_aes
     "CRYPTO_DEFAULT_SYMMETRIC_MODE", "SymmetricMode",
-    "crypto_aes_encrypt", "crypto_aes_decrypt",
+    "crypto_aes_encrypt", "crypto_aes_decrypt", "crypto_aes_get_nonce",
     # crypto_pkcs7
     "CryptoPkcs7",
     # crypto_pomes

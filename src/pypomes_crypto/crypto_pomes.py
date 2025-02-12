@@ -194,8 +194,7 @@ def crypto_hash(msg: Path | str | bytes | Any,
     elif isinstance(msg, Path):
         # argument is a file path
         buf_size: int = 128 * 1024
-        file_path: Path = Path(msg)
-        with file_path.open(mode="rb") as f:
+        with msg.open(mode="rb") as f:
             file_bytes: bytes = f.read(buf_size)
             while file_bytes:
                 hasher.update(file_bytes)

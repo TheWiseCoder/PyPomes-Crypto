@@ -1,5 +1,6 @@
 import sys
 from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 from enum import StrEnum
 from pathlib import Path
 from pypomes_core import (
@@ -87,7 +88,7 @@ def crypto_aes_encrypt(errors: list[str] | None,
 
     # build the cypher
     cipher: AES = AES.new(key=key,
-                          mode=__to_mode(mode),
+                          mode=__to_symmetric_mode(mode),
                           nonce=nonce)
     if header:
         cipher.update(header)
@@ -156,7 +157,7 @@ def crypto_aes_decrypt(errors: list[str] | None,
 
     # build the cypher
     cipher: AES = AES.new(key=key,
-                          mode=__to_mode(mode),
+                          mode=__to_symmetric_mode(mode),
                           nonce=nonce)
     if header:
         cipher.update(header)
@@ -174,8 +175,25 @@ def crypto_aes_decrypt(errors: list[str] | None,
     return result
 
 
-def __to_mode(tag: SymmetricMode) -> Literal:
+def crypto_aes_get_nonce() -> bytes:
+    """
+    Generate and return a random *number once* (*nonce*) value for cryptography use.
 
+    This function is provided as a convenience, as it simply
+    invokes *Crypto.Random.get_random_bytes(16)* for a suitable value.
+
+    :return: a random *number once* value
+    """
+    return get_random_bytes(16)
+
+
+def __to_symmetric_mode(tag: SymmetricMode) -> Literal:
+    """
+    Convert the given SymmetricMode *tag* to its internal literal value.
+
+    :param tag: the SymmetricMode value to convert
+    :return: the corresponding internal literal value
+    """
     result: Literal = None
     match tag.value:
         case "CCM":
