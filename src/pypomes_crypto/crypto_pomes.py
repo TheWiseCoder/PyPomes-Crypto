@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from io import BytesIO
+from passlib.hash import argon2
 from pathlib import Path
 from pyhanko.sign.validation.pdf_embedded import EmbeddedPdfSignature
 from pyhanko_certvalidator import ValidationContext
@@ -331,3 +332,48 @@ def crypto_decrypt(errors: list[str] | None,
             errors.append(exc_error)
 
     return result
+
+
+def crypto_pwd_encrypt(errors: list[str] | None,
+                       pwd: str,
+                       salt: bytes) -> str:
+    """
+    Encrypt a password given in *pwd*, using the provided *salt*, and return it.
+
+    :param errors: incidental error messages
+    :param pwd: the password to encrypt
+    :param salt: the salt value to use (must be at least 8 bytes long)
+    :return: the encrypted password, or 'None' on error
+    """
+    # initialize the return variable
+    result: str | None = None
+
+    try:
+        pwd_hash: str = argon2.using(salt=salt).hash(secret=pwd)
+        result = pwd_hash[pwd_hash.rfind("$")+1:]
+    except Exception as e:
+        if isinstance(errors, list):
+            exc_error: str = exc_format(exc=e,
+                                        exc_info=sys.exc_info())
+            errors.append(exc_error)
+
+    return result
+
+
+def crypto_pwd_verify(errors: list[str] | None,
+                      plain_pwd: str,
+                      cipher_pwd: str,
+                      salt: bytes) -> bool:
+    """
+    Verify, using the provided *salt*, whether the plaintext and encrypted passwords match.
+
+    :param errors: incidental error messages
+    :param plain_pwd: the plaintext password
+    :param cipher_pwd: the encryped password to verify
+    :param salt: the salt value to use (must be at least 8 bytes long)
+    :return: 'True' if they match, 'False' otherwise
+    """
+    pwd_hash: str = crypto_pwd_encrypt(errors=errors,
+                                       pwd=plain_pwd,
+                                       salt=salt)
+    return isinstance(pwd_hash, str) and cipher_pwd == pwd_hash[pwd_hash.rfind("$")+1:]
