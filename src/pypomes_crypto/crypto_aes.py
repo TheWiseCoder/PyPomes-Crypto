@@ -11,6 +11,9 @@ from typing import Literal, Final
 
 
 class SymmetricMode(StrEnum):
+    """
+    Chaining modes for AES.
+    """
     CCM = "CCM"          # Counter with CBC-MAC
     EAX = "EAX"          # Authenticated Encryption with Associated Data
     GCM = "GCM"          # Galois/Counter
@@ -195,16 +198,16 @@ def __to_symmetric_mode(tag: SymmetricMode) -> Literal:
     :return: the corresponding internal literal value
     """
     result: Literal = None
-    match tag.value:
-        case "CCM":
+    match tag:
+        case SymmetricMode.CCM:
             result = AES.MODE_CCM
-        case "EAX":
+        case SymmetricMode.EAX:
             result = AES.MODE_EAX
-        case "GCM":
+        case SymmetricMode.GCM:
             result = AES.MODE_GCM
-        case "SIV":
+        case SymmetricMode.SIV:
             result = AES.MODE_SIV
-        case "OCB":
+        case SymmetricMode.OCB:
             result = AES.MODE_OCB
 
     return result

@@ -168,8 +168,9 @@ def crypto_hash(msg: Path | str | bytes | Any,
         - type *str*: *msg* holds the data (used as utf8-encoded)
         - type *Path*: *msg* is a path to a file holding the data
 
-    Supported algorithms: *md5*, *blake2b*, *blake2s*, *sha1*, *sha224*, *sha256*, *sha384*,
-    *sha512*, *sha3_224*, *sha3_256*, *sha3_384*, *sha3_512*, *shake_128*, *shake_256*.
+    Supported algorithms:
+      *md5*, *blake2b*, *blake2s*, *sha1*, *sha224*, *sha256*, *sha384*,
+      *sha512*, *sha3_224*, *sha3_256*, *sha3_384*, *sha3_512*, *shake_128*, *shake_256*.
 
     :param msg: the message to calculate the hash for
     :param alg: the algorithm to use (defaults to an environment-defined value, or to 'sha256')
@@ -178,7 +179,7 @@ def crypto_hash(msg: Path | str | bytes | Any,
     # initialize the return variable
     result: bytes | None = None
 
-    # instantiate the hasher
+    # instantiate the hasher (undeclared type type is '_Hash')
     hasher = hashlib.new(name=alg.lower())
 
     # what is the type of the message ?
