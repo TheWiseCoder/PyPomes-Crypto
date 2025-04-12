@@ -40,9 +40,9 @@ def crypto_validate_p7s(errors: list[str],
     """
     Validate the digital signature of a PKCS#7 file.
 
-    If a *list* is provided in *errors*, the following inconsistencies are reported:
+    If *errors*, the following inconsistencies are reported:
         - The digital signature is invalid
-        - Error from CryptoPkcs7 instantiation
+        - Error from *CryptoPkcs7* instantiation
 
     :param errors: incidental error messages
     :param p7s_file: a p7s file path, or the bytes thereof
@@ -74,7 +74,7 @@ def crypto_validate_p7s(errors: list[str],
             rsa_key: RsaKey = import_key(extern_key=pkcs7.public_bytes)
             sig_scheme: PKCS115_SigScheme = pkcs1_15.new(rsa_key=rsa_key)
             sha256_hash: SHA256Hash = SHA256.new(data=pkcs7.payload)
-            # TODO @gtnunes: fix the verification process
+            # TODO @gtnunes: fix the verification process  # noqa: FIX002, TD003
             sig_scheme.verify(msg_hash=sha256_hash,
                               signature=pkcs7.signature)
             result = True
@@ -174,7 +174,7 @@ def crypto_hash(msg: Path | str | bytes | Any,
 
     :param msg: the message to calculate the hash for
     :param alg: the algorithm to use (defaults to an environment-defined value, or to 'sha256')
-    :return: the hash value obtained, or 'None' if the hash could not be computed
+    :return: the hash value obtained, or *None* if the hash could not be computed
     """
     # initialize the return variable
     result: bytes | None = None
@@ -219,7 +219,7 @@ def crypto_generate_rsa_keys(key_size: int = 2048) -> tuple[bytes, bytes]:
     Generate and return a matching pair of *RSA* private and public keys.
 
     :param key_size: the key size (defaults to 2048 bytes)
-    :return: a matching pair (private_key, public_key) of serialized RSA keys
+    :return: a matching key pair *(private, public)* of serialized RSA keys
     """
     # generate the private key
     priv_key: RSAPrivateKey = rsa.generate_private_key(public_exponent=65537,
@@ -260,7 +260,7 @@ def crypto_encrypt(errors: list[str] | None,
     :param errors: incidental error messages
     :param plaintext: the message to encrypt
     :param key: the cryptographic key (byte length must be 16, 24 or 32)
-    :return: the encrypted message, or *None* on error
+    :return: the encrypted message, or *None* if error
     """
     # initialize the return variable
     result: bytes | None = None
@@ -309,7 +309,7 @@ def crypto_decrypt(errors: list[str] | None,
     :param errors: incidental error messages
     :param ciphertext: the message to decrypt
     :param key: the cryptographic key
-    :return: the decrypted message, or *None* on error
+    :return: the decrypted message, or *None* if error
     """
     # initialize the return variable
     result: bytes | None = None
@@ -344,7 +344,7 @@ def crypto_pwd_encrypt(errors: list[str] | None,
     :param errors: incidental error messages
     :param pwd: the password to encrypt
     :param salt: the salt value to use (must be at least 8 bytes long)
-    :return: the encrypted password, or 'None' on error
+    :return: the encrypted password, or *None* if error
     """
     # initialize the return variable
     result: str | None = None
@@ -372,9 +372,9 @@ def crypto_pwd_verify(errors: list[str] | None,
     :param plain_pwd: the plaintext password
     :param cipher_pwd: the encryped password to verify
     :param salt: the salt value to use (must be at least 8 bytes long)
-    :return: 'True' if they match, 'False' otherwise
+    :return: *True* if they match, *False* otherwise
     """
     pwd_hash: str = crypto_pwd_encrypt(errors=errors,
                                        pwd=plain_pwd,
                                        salt=salt)
-    return isinstance(pwd_hash, str) and cipher_pwd == pwd_hash[pwd_hash.rfind("$")+1:]
+    return isinstance(pwd_hash, str) and cipher_pwd == pwd_hash
