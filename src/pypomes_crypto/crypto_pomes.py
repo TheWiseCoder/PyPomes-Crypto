@@ -14,6 +14,7 @@ from Crypto.Util.Padding import pad, unpad
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
+from enum import StrEnum
 from io import BytesIO
 from passlib.hash import argon2
 from pathlib import Path
@@ -28,6 +29,16 @@ from pypomes_core import (
     file_get_data, exc_format, env_get_str
 )
 from typing import Any, Final
+
+
+class CryptoSignature(StrEnum):
+    """
+    Types of cryptographic signatures in documents.
+    """
+    CADES = "CAdES"
+    PADES = "PAdES"
+    XADES = "XAdES"
+
 
 CRYPTO_DEFAULT_HASH_ALGORITHM: Final[str] = \
     env_get_str(key=f"{APP_PREFIX}_CRYPTO_DEFAULT_HASH_ALGORITHM",
