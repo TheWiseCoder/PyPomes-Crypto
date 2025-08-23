@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pypomes_crypto"
-version = "0.4.3"
+version = "0.4.6"
 authors = [
   { name="GT Nunes", email="wisecoder01@gmail.com" }
 ]
@@ -19,13 +19,13 @@ classifiers = [
     "Operating System :: OS Independent"
 ]
 dependencies = [
-    "argon2-cffi>=23.1.0",
+    "argon2-cffi>=25.1.0",
     "asn1crypto>=1.5.1",
-    "cryptography>=44.0.2",
+    "cryptography>=45.0.6",
     "passlib>=1.7.4",
-    "pycryptodome>=3.22.0",
-    "pyHanko>=0.26.0",
-    "pypomes_core>=2.0.9"
+    "pycryptodome>=3.23.0",
+    "pyHanko>=0.29.1",
+    "pypomes_core>=2.7.0"
 ]
 
 [project.urls]

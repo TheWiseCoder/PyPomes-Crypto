@@ -14,7 +14,7 @@ from Crypto.Util.Padding import pad, unpad
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
-from enum import StrEnum
+from enum import StrEnum, auto
 from io import BytesIO
 from passlib.hash import argon2
 from pathlib import Path
@@ -26,9 +26,9 @@ from pyhanko.sign.validation import validate_pdf_signature
 from pyhanko.sign.validation.status import PdfSignatureStatus
 from pypomes_core import (
     APP_PREFIX,
-    file_get_data, exc_format, env_get_str
+    file_get_data, exc_format, env_get_enum
 )
-from typing import Any, Final
+from typing import Final
 
 
 class CryptoSignature(StrEnum):
@@ -40,24 +40,45 @@ class CryptoSignature(StrEnum):
     XADES = "XAdES"
 
 
-CRYPTO_DEFAULT_HASH_ALGORITHM: Final[str] = \
-    env_get_str(key=f"{APP_PREFIX}_CRYPTO_DEFAULT_HASH_ALGORITHM",
-                def_value="sha256")
+class HashAlgorithm(StrEnum):
+    """
+    Supported hash algorithms.
+    """
+    MD5 = auto()
+    BLAKE2B = auto()
+    BLAKE2S = auto()
+    SHA1 = auto()
+    SHA224 = auto()
+    SHA256 = auto()
+    SHA384 = auto()
+    SHA512 = auto()
+    SHA3_224 = auto()
+    SHA3_256 = auto()
+    SHA3_384 = auto()
+    SHA3_512 = auto()
+    SHAKE_128 = auto()
+    SHAKE_256 = auto()
 
 
-def crypto_validate_p7s(errors: list[str],
-                        p7s_file: Path | str | bytes,
-                        p7s_payload: str | bytes = None) -> bool:
+CRYPTO_DEFAULT_HASH_ALGORITHM: Final[HashAlgorithm] = \
+    env_get_enum(key=f"{APP_PREFIX}_CRYPTO_DEFAULT_HASH_ALGORITHM",
+                 enum_class=HashAlgorithm,
+                 def_value=HashAlgorithm.SHA256)
+
+
+def crypto_validate_p7s(p7s_file: Path | str | bytes,
+                        p7s_payload: str | bytes = None,
+                        errors: list[str] = None) -> bool:
     """
     Validate the digital signature of a PKCS#7 file.
 
-    If *errors*, the following inconsistencies are reported:
+     If a *list* is provided in *errors*, the following inconsistencies are reported:
         - The digital signature is invalid
         - Error from *CryptoPkcs7* instantiation
 
-    :param errors: incidental error messages
     :param p7s_file: a p7s file path, or the bytes thereof
     :param p7s_payload: a payload file path, or the bytes thereof
+    :param errors: incidental error messages
     :return: *True* if the input data are consistent, *False* otherwise
     """
     # import
@@ -99,9 +120,9 @@ def crypto_validate_p7s(errors: list[str],
     return result
 
 
-def crypto_validate_pdf(errors: list[str] | None,
-                        pdf_file: Path | str | bytes,
-                        certs_file: Path | str | bytes = None) -> bool:
+def crypto_validate_pdf(pdf_file: Path | str | bytes,
+                        certs_file: Path | str | bytes = None,
+                        errors: list[str] = None) -> bool:
     """
     Validate the digital signature of a PDF file.
 
@@ -113,9 +134,9 @@ def crypto_validate_pdf(errors: list[str] | None,
         - The signature block is not intact
         - A bad seed value found
 
-    :param errors: incidental error messages
     :param pdf_file: a PDF file path, or the PDF file bytes
     :param certs_file: a path to a file containing a PEM/DER-encoded certificate chain, or the bytes thereof
+    :param errors: incidental error messages
     :return: *True* if the input data are consistent, *False* otherwise
     """
     # initialize the return variable
@@ -169,8 +190,8 @@ def crypto_validate_pdf(errors: list[str] | None,
     return result
 
 
-def crypto_hash(msg: Path | str | bytes | Any,
-                alg: str = CRYPTO_DEFAULT_HASH_ALGORITHM) -> bytes:
+def crypto_hash(msg: Path | str | bytes,
+                alg: HashAlgorithm = CRYPTO_DEFAULT_HASH_ALGORITHM) -> bytes:
     """
     Compute the hash of *msg*, using the algorithm specified in *alg*.
 
@@ -178,6 +199,7 @@ def crypto_hash(msg: Path | str | bytes | Any,
         - type *bytes*: *msg* holds the data (used as is)
         - type *str*: *msg* holds the data (used as utf8-encoded)
         - type *Path*: *msg* is a path to a file holding the data
+        - other: *pickle*'s serialization of *msg* is used
 
     Supported algorithms:
       *md5*, *blake2b*, *blake2s*, *sha1*, *sha224*, *sha256*, *sha384*,
@@ -191,7 +213,7 @@ def crypto_hash(msg: Path | str | bytes | Any,
     result: bytes | None = None
 
     # instantiate the hasher (undeclared type type is '_Hash')
-    hasher = hashlib.new(name=alg.lower())
+    hasher = hashlib.new(name=alg)
 
     # what is the type of the message ?
     if isinstance(msg, bytes):
@@ -246,9 +268,9 @@ def crypto_generate_rsa_keys(key_size: int = 2048) -> tuple[bytes, bytes]:
     return result_priv, result_pub
 
 
-def crypto_encrypt(errors: list[str] | None,
-                   plaintext: Path | str | bytes,
-                   key: bytes) -> bytes:
+def crypto_encrypt(plaintext: Path | str | bytes,
+                   key: bytes,
+                   errors: list[str] = None) -> bytes:
     """
     Symmetrically encrypt *plaintext* using the given *key*.
 
@@ -268,9 +290,9 @@ def crypto_encrypt(errors: list[str] | None,
 
     The mandatory *key* must be 16, 24, or 32 bytes long.
 
-    :param errors: incidental error messages
     :param plaintext: the message to encrypt
     :param key: the cryptographic key (byte length must be 16, 24 or 32)
+    :param errors: incidental error messages
     :return: the encrypted message, or *None* if error
     """
     # initialize the return variable
@@ -295,9 +317,9 @@ def crypto_encrypt(errors: list[str] | None,
     return result
 
 
-def crypto_decrypt(errors: list[str] | None,
-                   ciphertext: Path | str | bytes,
-                   key: bytes) -> bytes:
+def crypto_decrypt(ciphertext: Path | str | bytes,
+                   key: bytes,
+                   errors: list[str] = None) -> bytes:
     """
     Symmetrically decrypt *ciphertext* using the given *key*.
 
@@ -317,9 +339,9 @@ def crypto_decrypt(errors: list[str] | None,
 
      The *key* must be the same one used to generate *ciphertext*.
 
-    :param errors: incidental error messages
     :param ciphertext: the message to decrypt
     :param key: the cryptographic key
+    :param errors: incidental error messages
     :return: the decrypted message, or *None* if error
     """
     # initialize the return variable
@@ -346,15 +368,15 @@ def crypto_decrypt(errors: list[str] | None,
     return result
 
 
-def crypto_pwd_encrypt(errors: list[str] | None,
-                       pwd: str,
-                       salt: bytes) -> str:
+def crypto_pwd_encrypt(pwd: str,
+                       salt: bytes,
+                       errors: list[str] = None) -> str:
     """
     Encrypt a password given in *pwd*, using the provided *salt*, and return it.
 
-    :param errors: incidental error messages
     :param pwd: the password to encrypt
     :param salt: the salt value to use (must be at least 8 bytes long)
+    :param errors: incidental error messages
     :return: the encrypted password, or *None* if error
     """
     # initialize the return variable
@@ -372,20 +394,20 @@ def crypto_pwd_encrypt(errors: list[str] | None,
     return result
 
 
-def crypto_pwd_verify(errors: list[str] | None,
-                      plain_pwd: str,
+def crypto_pwd_verify(plain_pwd: str,
                       cipher_pwd: str,
-                      salt: bytes) -> bool:
+                      salt: bytes,
+                      errors: list[str] = None) -> bool:
     """
     Verify, using the provided *salt*, whether the plaintext and encrypted passwords match.
 
-    :param errors: incidental error messages
     :param plain_pwd: the plaintext password
     :param cipher_pwd: the encryped password to verify
     :param salt: the salt value to use (must be at least 8 bytes long)
+    :param errors: incidental error messages
     :return: *True* if they match, *False* otherwise
     """
-    pwd_hash: str = crypto_pwd_encrypt(errors=errors,
-                                       pwd=plain_pwd,
-                                       salt=salt)
+    pwd_hash: str = crypto_pwd_encrypt(pwd=plain_pwd,
+                                       salt=salt,
+                                       errors=errors)
     return isinstance(pwd_hash, str) and cipher_pwd == pwd_hash

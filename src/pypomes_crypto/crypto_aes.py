@@ -5,7 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from pypomes_core import (
     APP_PREFIX,
-    file_get_data, exc_format, env_get_str
+    file_get_data, exc_format, env_get_enum
 )
 from typing import Literal, Final
 
@@ -21,18 +21,18 @@ class SymmetricMode(StrEnum):
     SIV = "SIV"          # Synthetic Initialization Vector
 
 
-_cipher: str = env_get_str(key=f"{APP_PREFIX}_CRYPTO_DEFAULT_SYMMETRIC_MODE",
-                           values=list(map(str, SymmetricMode)),
-                           def_value="EAX")
-CRYPTO_DEFAULT_SYMMETRIC_MODE: Final[SymmetricMode] = SymmetricMode(_cipher)
+CRYPTO_DEFAULT_SYMMETRIC_MODE: Final[SymmetricMode] = \
+    env_get_enum(key=f"{APP_PREFIX}_CRYPTO_DEFAULT_SYMMETRIC_MODE",
+                 enum_class=SymmetricMode,
+                 def_value=SymmetricMode.EAX)
 
 
-def crypto_aes_encrypt(errors: list[str] | None,
-                       plaintext: Path | str | bytes,
+def crypto_aes_encrypt(plaintext: Path | str | bytes,
                        key: bytes,
                        header: bytes = None,
                        nonce: bytes = None,
-                       mode: SymmetricMode = SymmetricMode.EAX) -> (bytes, bytes, bytes):
+                       mode: SymmetricMode = SymmetricMode.EAX,
+                       errors: list[str] = None) -> (bytes, bytes, bytes):
     """
     Symmetrically encrypt *plaintext* using the given *key*, and the chaining mode specified in *mode*.
 
@@ -75,12 +75,12 @@ def crypto_aes_encrypt(errors: list[str] | None,
     On decryption, the *ciphertext*, *key*, *header*, *nonce* and the *MAC* tag, as well as the chaining
     mode used, must be provided. The *MAC* tag allows the cipher to provide cryptographic *authentication*.
 
-    :param errors: incidental error messages
     :param plaintext: the message to encrypt
     :param key: the cryptographic key
     :param header: the optional message header
     :param nonce: the optional cryptographic *number once* value
     :param mode: the chaining mode to use (defaults to *EAX*)
+    :param errors: incidental error messages
     :return: a tuple containing the encrypted message, and the *nonce* and *MAC* tag used, or *None* on error
     """
     # initialize the return variable
@@ -110,13 +110,13 @@ def crypto_aes_encrypt(errors: list[str] | None,
     return result
 
 
-def crypto_aes_decrypt(errors: list[str] | None,
-                       ciphertext: Path | str | bytes,
+def crypto_aes_decrypt(ciphertext: Path | str | bytes,
                        key: bytes,
                        nonce: bytes,
                        mac_tag: bytes,
                        header: bytes = None,
-                       mode: SymmetricMode = SymmetricMode.EAX) -> bytes:
+                       mode: SymmetricMode = SymmetricMode.EAX,
+                       errors: list[str] = None) -> bytes:
     """
     Symmetrically decrypt *ciphertext* using the given *key*, and the mode of operation specified in *mode*.
 
@@ -143,13 +143,13 @@ def crypto_aes_decrypt(errors: list[str] | None,
       - *SIV* (Synthetic Initialization Vector)
       - *OCB* (Offset CodeBook)
 
-    :param errors: incidental error messages
     :param ciphertext: the message to decrypt
     :param key: the cryptographic key
     :param nonce: the cryptographic *number once* value
     :param mac_tag: the *MAC* authentication tag
     :param header: the optional message header
     :param mode: the chaining mode to use (defaults to *EAX*)
+    :param errors: incidental error messages
     :return: the decrypted message, or *None* on error
     """
     # initialize the return variable

@@ -19,7 +19,7 @@ class CryptoPkcs7:
     # p7s_bytes: bytes              - the PKCS#7 data
     # payload: bytes                - the payload (embedded or external)
     # payload_hash: bytes           - the payload hash
-    # hash_algorithm: str           - the algorithm used to calculate the payload hash
+    # hash_algorithm: HashAlgorithm - the algorithm used to calculate the payload hash
     # signature: bytes              - the digital signature
     # signature_algorithm: str      - the algorithm used to generate the signature
     # signature_timestamp: datetime - the signature's timestamp
@@ -63,9 +63,10 @@ class CryptoPkcs7:
         signer_info: cms.SignerInfo = signed_data["signer_infos"][0]
 
         # extract the needed components
+        from .crypto_pomes import HashAlgorithm
+        self.hash_algorithm: HashAlgorithm = HashAlgorithm(signer_info["digest_algorithm"]["algorithm"].native)
         self.signature: bytes = signer_info["signature"].native
         self.signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
-        self.hash_algorithm: str = signer_info["digest_algorithm"]["algorithm"].native
 
         signed_attrs = signer_info["signed_attrs"]
         for signed_attr in signed_attrs:
@@ -89,7 +90,7 @@ class CryptoPkcs7:
 
         :return: 'True' if the hash value matches the payload, 'False' otherwise
         """
-        from crypto_pomes import crypto_hash
+        from .crypto_pomes import crypto_hash
         effective_hash: bytes = crypto_hash(msg=self.payload,
                                             alg=self.hash_algorithm)
         return effective_hash == self.payload_hash
