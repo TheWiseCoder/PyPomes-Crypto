@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import pickle
 import sys
@@ -11,6 +12,7 @@ from Crypto.PublicKey.RSA import import_key, RsaKey
 from Crypto.Signature import pkcs1_15
 from Crypto.Signature.pkcs1_15 import PKCS115_SigScheme
 from Crypto.Util.Padding import pad, unpad
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
@@ -28,10 +30,18 @@ from pypomes_core import (
     APP_PREFIX,
     file_get_data, exc_format, env_get_enum
 )
-from typing import Final
+from typing import Final, Literal
 
 
-class CryptoSignature(StrEnum):
+class SignatureMode(StrEnum):
+    """
+    Location of signatures with respect to the signed files.
+    """
+    ATTACHED = auto()
+    DETACHED = auto()
+
+
+class SignatureType(StrEnum):
     """
     Types of cryptographic signatures in documents.
     """
@@ -411,3 +421,60 @@ def crypto_pwd_verify(plain_pwd: str,
                                        salt=salt,
                                        errors=errors)
     return isinstance(pwd_hash, str) and cipher_pwd == pwd_hash
+
+
+def crypto_jwk_convert(jwk: dict[str, str],
+                       fmt: Literal["DER", "PEM"]) -> bytes | str | None:
+    """
+    Convert the *JWT* (JSON Web Key) given in *jwk* to the format *fmt*.
+
+    The supported target formats are:
+        - *DER*: Distinguished Encoding Rules (bytes)
+        - *PEM*: Privacy-Enhanced Mail (str)
+
+    A typical JWK has the following format (for simplicity, 'n' and 'x5c' are truncated):
+    {
+        "kid": "5vrDgXBKmE-7EorvkE5Mu9VlId_ISgl2v7Af23nDvDU",
+        "kty": "RSA",
+        "alg": "RS256",
+        "use": "sig",
+        "n": "2lfctxbCT2UWsBMC1rlpmWRcmDRS-EN0opirHzUsgHf7VJCyN0beKchy3biKQeXhgoirWR-f9uufn6Wl...",
+        "e": "AQAB",
+        "x5c": [
+            "MIIClTCCAX0CBgFxx6eIWjANBgkqhkiG9w0BAQsFADAOMQwwCgYDVQQDDANwamUwHhcNMjAwNDI5MjAzNDM3..."
+        ],
+        "x5t": "Bq0yqAX_D4aFA0eX9HSBVZxVW3A",
+        "x5t#S256": "OGHvtCjTBasA9uHivO1_cNJXKExc0w1-1yhTPEK2CPM"
+    }
+
+    :param jwk: the JSON web key to be converted
+    :param fmt: the target format
+    :return: *jwt* in *DER* (bytes) or *PEM* (str) format, or *None* if converting was not possible
+    """
+    # retrieve and decode the base64url values
+    n_b64: str = jwk["n"]
+    e_b64: str = jwk["e"]
+    n_int: int = int.from_bytes(base64.urlsafe_b64decode(n_b64 + "=="), "big")
+    e_int: int = int.from_bytes(base64.urlsafe_b64decode(e_b64 + "=="), "big")
+
+    # construct the RSA public key
+    public_numbers = rsa.RSAPublicNumbers(e=e_int,
+                                          n=n_int)
+    public_key = public_numbers.public_key(backend=default_backend())
+
+    result: bytes | str | None = None
+    if fmt == "DER":
+        # export to DER format
+        result: bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    elif fmt == "PEM":
+        # export to PEM format
+        pem_bytes: bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        result: str = pem_bytes.decode("utf-8")
+
+    return result

@@ -7,10 +7,11 @@ from .crypto_pkcs7 import (
 )
 from .crypto_pomes import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
-    CryptoSignature, HashAlgorithm,
+    SignatureMode, SignatureType, HashAlgorithm,
     crypto_validate_p7s, crypto_validate_pdf,
     crypto_hash, crypto_generate_rsa_keys,
-    crypto_encrypt, crypto_decrypt, crypto_pwd_encrypt, crypto_pwd_verify
+    crypto_encrypt, crypto_decrypt,
+    crypto_pwd_encrypt, crypto_pwd_verify, crypto_jwk_convert
 )
 
 __all__ = [
@@ -21,10 +22,11 @@ __all__ = [
     "CryptoPkcs7",
     # crypto_pomes
     "CRYPTO_DEFAULT_HASH_ALGORITHM",
-    "CryptoSignature", "HashAlgorithm",
+    "SignatureMode", "SignatureType", "HashAlgorithm",
     "crypto_validate_p7s", "crypto_validate_pdf",
     "crypto_hash", "crypto_generate_rsa_keys",
-    "crypto_encrypt", "crypto_decrypt", "crypto_pwd_encrypt", "crypto_pwd_verify"
+    "crypto_encrypt", "crypto_decrypt",
+    "crypto_pwd_encrypt", "crypto_pwd_verify", "crypto_jwk_convert"
 ]
 
 from importlib.metadata import version
