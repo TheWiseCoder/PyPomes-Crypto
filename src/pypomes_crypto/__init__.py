@@ -16,7 +16,7 @@ from .crypto_pomes import (
 from .jwt_pomes import (
     jwt_convert, jwt_validate,
     jwt_get_header, jwt_get_payload,
-    jwt_get_values, jwt_get_public_key
+    jwt_get_claim, jwt_get_claims, jwt_get_public_key
 )
 
 __all__ = [
@@ -35,7 +35,7 @@ __all__ = [
     # jwt_pomes
     "jwt_convert", "jwt_validate",
     "jwt_get_header", "jwt_get_payload",
-    "jwt_get_values", "jwt_get_public_key"
+    "jwt_get_claim", "jwt_get_claims", "jwt_get_public_key"
 ]
 
 from importlib.metadata import version

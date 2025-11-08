@@ -161,34 +161,80 @@ def jwt_get_payload(token: str,
     return result
 
 
-def jwt_get_values(token: str,
+def jwt_get_claim(token: str,
+                  key: str,
+                  errors: list[str] = None,
+                  logger: Logger = None) -> str | None:
+    """
+    Retrieve the claim associated with *key* in *token*'s header or payload.
+
+    :param token: the reference token
+    :param key: the name of the claim whose values are to be returned
+    :param errors: incidental errors
+    :param logger: optiona logger
+    :return: the requested claim, or *None* if error or not found
+    """
+    # initialize the return variable:
+    result: str | None = None
+
+    header: dict[str, Any] = jwt_get_header(token=token,
+                                            errors=errors,
+                                            logger=logger)
+    if not errors:
+        result = header.get(key)
+        if not result:
+            payload: dict[str, Any] = jwt_get_payload(token=token,
+                                                      errors=errors,
+                                                      logger=logger)
+            if not errors:
+                result = payload.get(key)
+
+    return result
+
+
+def jwt_get_claims(token: str,
                    keys: tuple[str, ...],
                    errors: list[str] = None,
-                   logger: Logger = None) -> tuple:
+                   logger: Logger = None) -> tuple | None:
     """
-    Retrieve the values of *keys* in *token*'s payload.
+    Retrieve the claims associated with *keys* in *token*'s header or payload.
 
-    Ther values are returned in the same order as requested in *keys*.
+    The claims are returned in the same order as requested in *keys*.
     For a claim not found, *None* is returned in its position.
 
     :param token: the reference token
     :param keys: the names of the claims whose values are to be returned
     :param errors: incidental errors
     :param logger: optiona logger
-    :return: a tuple containing the respective values of *keys* in *token*'s payload.
+    :return: a tuple containing the respective values of *keys* in *token*'s payload, or *None* if error
     """
-    payload: dict[str, Any] = jwt_get_payload(token=token,
-                                              errors=errors,
-                                              logger=logger)
-    return tuple([payload.get(key) for key in keys])
+    # initialize the return variable:
+    result: tuple | None = None
+
+    header: dict[str, Any] = jwt_get_header(token=token,
+                                            errors=errors,
+                                            logger=logger)
+    if not errors:
+        payload: dict[str, Any] = jwt_get_payload(token=token,
+                                                  errors=errors,
+                                                  logger=logger)
+        if not errors:
+            result = tuple([header.get(key) or payload.get(key) for key in keys])
+
+    return result
 
 
-def jwt_get_public_key(token: str,
+def jwt_get_public_key(issuer: str = None,
+                       token: str = None,
                        fmt: Literal["DER", "PEM"] = None,
                        errors: list[str] = None,
-                       logger: Logger = None) -> dict[str, str] | str | None:
+                       logger: Logger = None) -> dict[str, str] | bytes | str | None:
     """
-    Obtain the public key used to sign *token*.
+    Obtain the public key used to sign the token.
+
+    The token's issuer may be provided in one of these two parameters:
+        - *issuer*:  the content of the token claim *iss*
+        - *token*: the token itself, from which the *issuer* is extracted
 
     This is accomplished by requesting the token issuer for its *JWKS* (JSON Web Key Set),
     containing the public keys used for various purposes, as indicated in the attribute *use*:
@@ -219,21 +265,23 @@ def jwt_get_public_key(token: str,
     The signature key is returned in its original *JWK* (JSON Web Key) format, or converted to
     either *DER* (Distinguished Encoding Rules) or *PEM* (Privacy-Enhanced Mail) format, as per *ftm*.
 
-    :param token: the reference token
+    :param issuer: the token's issuer, as presented in the token's *iss* claim
+    :param token: the reference token (required if *issuer* is not provided)
     :param fmt: the returning key's format (defaults to *None* for the key's original format)
     :param errors: incidental error messages
     :param logger: optional logger
     :return: the public key in *JWT*, *DER*, or *PEM* format, or *None* if error
     """
     # initialize the return variable
-    result: dict[str, str] | str | None = None
+    result: dict[str, str] | bytes | str | None = None
 
-    payload: dict[str, Any] = jwt_get_payload(token=token,
-                                              errors=errors,
-                                              logger=logger)
-    if not errors:
+    if not issuer and token:
+        issuer: str = jwt_get_claim(token=token,
+                                    key="iss",
+                                    errors=errors,
+                                    logger=logger)
+    if issuer:
         # obtain the JWKS (JSON Web Key Set) from the token issuer
-        issuer: str = payload.get("iss")
         url: str = f"{issuer}/protocol/openid-connect/certs"
         if logger:
             logger.debug(msg=f"GET {url}")
@@ -282,6 +330,13 @@ def jwt_get_public_key(token: str,
                 logger.error(msg=msg)
             if isinstance(errors, list):
                 errors.append(msg)
+
+    elif not errors:
+        msg = "Token/issuer not provided"
+        if logger:
+            logger.error(msg=msg)
+        if isinstance(errors, list):
+            errors.append(msg)
 
     return result
 
