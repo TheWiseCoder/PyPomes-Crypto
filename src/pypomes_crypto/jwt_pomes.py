@@ -226,14 +226,14 @@ def jwt_get_claims(token: str,
 
 def jwt_get_public_key(issuer: str = None,
                        token: str = None,
-                       fmt: Literal["DER", "PEM"] = None,
+                       fmt: Literal["PEM", "DER", "JWK"] = "PEM",
                        errors: list[str] = None,
                        logger: Logger = None) -> dict[str, str] | bytes | str | None:
     """
     Obtain the public key used to sign the token.
 
     The token's issuer may be provided in one of these two parameters:
-        - *issuer*:  the content of the token claim *iss*
+        - *issuer*: the content of the token claim *iss*
         - *token*: the token itself, from which the *issuer* is extracted
 
     This is accomplished by requesting the token issuer for its *JWKS* (JSON Web Key Set),
@@ -265,9 +265,9 @@ def jwt_get_public_key(issuer: str = None,
     The signature key is returned in its original *JWK* (JSON Web Key) format, or converted to
     either *DER* (Distinguished Encoding Rules) or *PEM* (Privacy-Enhanced Mail) format, as per *ftm*.
 
-    :param issuer: the token's issuer, as presented in the token's *iss* claim
-    :param token: the reference token (required if *issuer* is not provided)
-    :param fmt: the returning key's format (defaults to *None* for the key's original format)
+    :param issuer: the token's issuer, as presented in the token's *iss* claim (required, if *token* is not provided)
+    :param token: the reference token (required, if *issuer* is not provided)
+    :param fmt: the returning key's format (defaults to *PEM*)
     :param errors: incidental error messages
     :param logger: optional logger
     :return: the public key in *JWT*, *DER*, or *PEM* format, or *None* if error
@@ -307,7 +307,7 @@ def jwt_get_public_key(issuer: str = None,
                     else:
                         result = jwk
                     if result and logger:
-                        logger.debug(f"Public key obtained for isuer '{issuer}'")
+                        logger.debug(f"Public key obtained for issuer '{issuer}'")
                 else:
                     msg: str = (f"Signature public key missing from the JWKS "
                                 f"returned by the token issuer '{issuer}'")

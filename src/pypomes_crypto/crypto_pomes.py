@@ -75,7 +75,7 @@ CRYPTO_DEFAULT_HASH_ALGORITHM: Final[HashAlgorithm] = \
 
 
 def crypto_validate_p7s(p7s_file: Path | str | bytes,
-                        p7s_payload: str | bytes = None,
+                        p7s_payload: Path | str | bytes = None,
                         errors: list[str] = None) -> bool:
     """
     Validate the digital signature of a PKCS#7 file.
@@ -106,9 +106,8 @@ def crypto_validate_p7s(p7s_file: Path | str | bytes,
                                         exc_info=sys.exc_info())
             errors.append(exc_error)
 
-    # was the PKCS7 object instanciated ?
     if pkcs7:
-        # yes, verify the signature
+        # verify the PKCS7 signature
         try:
             # noinspection PyUnboundLocalVariable
             rsa_key: RsaKey = import_key(extern_key=pkcs7.public_bytes)

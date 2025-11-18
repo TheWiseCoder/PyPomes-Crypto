@@ -14,22 +14,23 @@ from pypomes_core import file_get_data
 class CryptoPkcs7:
     """
     Python code to extract relevant data from a PKCS#7 signature file in DER or PEM format.
+
+    These are the instance attributes:
+        - p7s_bytes: bytes              - the PKCS#7 data
+        - payload: bytes                - the payload (embedded or external)
+        - payload_hash: bytes           - the payload hash
+        - hash_algorithm: HashAlgorithm - the algorithm used to calculate the payload hash
+        - signature: bytes              - the digital signature
+        - signature_algorithm: str      - the algorithm used to generate the signature
+        - signature_timestamp: datetime - the signature's timestamp
+        - public_key: RSAPublicKey      - the RSA public key
+        - public_bytes: bytes           - the serialized public key (in PEM format)
+        - cert_chain: list[bytes]       - the serialized X509 certificate chain (in PEM format)
     """
-    # instance attributes
-    # p7s_bytes: bytes              - the PKCS#7 data
-    # payload: bytes                - the payload (embedded or external)
-    # payload_hash: bytes           - the payload hash
-    # hash_algorithm: HashAlgorithm - the algorithm used to calculate the payload hash
-    # signature: bytes              - the digital signature
-    # signature_algorithm: str      - the algorithm used to generate the signature
-    # signature_timestamp: datetime - the signature's timestamp
-    # public_key: RSAPublicKey      - the RSA public key
-    # public_bytes: bytes           - the serialized public key (in PEM format)
-    # cert_chain: list[bytes]       - the serialized X509 certificate chain (in PEM format)
 
     def __init__(self,
                  p7s_file: Path | str | bytes,
-                 p7s_payload: str | bytes = None) -> None:
+                 p7s_payload: Path | str | bytes = None) -> None:
         """
         Instantiate the PKCS#7 crypto class, and extract the relevant data.
 
