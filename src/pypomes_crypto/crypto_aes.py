@@ -1,5 +1,14 @@
 import sys
 from Crypto.Cipher import AES
+from Crypto.Cipher._mode_cbc import CbcMode
+from Crypto.Cipher._mode_ccm import CcmMode
+from Crypto.Cipher._mode_ecb import EcbMode
+from Crypto.Cipher._mode_cfb import CfbMode
+from Crypto.Cipher._mode_ctr import CtrMode
+from Crypto.Cipher._mode_eax import EaxMode
+from Crypto.Cipher._mode_ofb import OfbMode
+from Crypto.Cipher._mode_openpgp import OpenPgpMode
+from Crypto.Cipher._mode_siv import SivMode
 from Crypto.Random import get_random_bytes
 from enum import StrEnum
 from pathlib import Path
@@ -8,6 +17,8 @@ from pypomes_core import (
     file_get_data, exc_format, env_get_enum
 )
 from typing import Literal, Final
+
+AesMode = type[CbcMode | CcmMode | CfbMode, CtrMode | EaxMode | EcbMode | OfbMode | OpenPgpMode | SivMode]
 
 
 class SymmetricMode(StrEnum):
@@ -32,7 +43,7 @@ def crypto_aes_encrypt(plaintext: Path | str | bytes,
                        header: bytes = None,
                        nonce: bytes = None,
                        mode: SymmetricMode = SymmetricMode.EAX,
-                       errors: list[str] = None) -> (bytes, bytes, bytes):
+                       errors: list[str] = None) -> tuple[bytes, bytes, bytes]:
     """
     Symmetrically encrypt *plaintext* using the given *key*, and the chaining mode specified in *mode*.
 
@@ -90,30 +101,31 @@ def crypto_aes_encrypt(plaintext: Path | str | bytes,
     plaindata: bytes = file_get_data(file_data=plaintext)
 
     # build the cypher
-    cipher: AES = AES.new(key=key,
-                          mode=__to_symmetric_mode(mode),
-                          nonce=nonce)
+    # noinspection PyTypeChecker
+    cipher: AesMode = AES.new(key=key,
+                              mode=__to_symmetric_mode(mode))
     if header:
         cipher.update(header)
+        if nonce:
+            cipher.nonce = nonce
 
     # encrypt the data
     try:
-        result_nonce: bytes = nonce or cipher.nonce
-        result_ciphertext, result_tag = cipher.encrypt_and_digest(plaintext=plaindata)
-        result = (result_ciphertext, result_nonce, result_tag)
+        ciphertext, tag = cipher.encrypt_and_digest(plaintext=plaindata)
+        result = (ciphertext, cipher.nonce, tag)
     except Exception as e:
         if isinstance(errors, list):
-            exc_error: str = exc_format(exc=e,
-                                        exc_info=sys.exc_info())
-            errors.append(exc_error)
+            exc_err: str = exc_format(exc=e,
+                                      exc_info=sys.exc_info())
+            errors.append(exc_err)
 
     return result
 
 
 def crypto_aes_decrypt(ciphertext: Path | str | bytes,
                        key: bytes,
-                       nonce: bytes,
                        mac_tag: bytes,
+                       nonce: bytes,
                        header: bytes = None,
                        mode: SymmetricMode = SymmetricMode.EAX,
                        errors: list[str] = None) -> bytes:
@@ -145,8 +157,8 @@ def crypto_aes_decrypt(ciphertext: Path | str | bytes,
 
     :param ciphertext: the message to decrypt
     :param key: the cryptographic key
-    :param nonce: the cryptographic *number once* value
     :param mac_tag: the *MAC* authentication tag
+    :param nonce: the cryptographic *number once* value
     :param header: the optional message header
     :param mode: the chaining mode to use (defaults to *EAX*)
     :param errors: incidental error messages
@@ -159,11 +171,12 @@ def crypto_aes_decrypt(ciphertext: Path | str | bytes,
     cipherdata: bytes = file_get_data(file_data=ciphertext)
 
     # build the cypher
-    cipher: AES = AES.new(key=key,
-                          mode=__to_symmetric_mode(mode),
-                          nonce=nonce)
+    # noinspection PyTypeChecker
+    cipher: AesMode = AES.new(key=key,
+                              mode=__to_symmetric_mode(mode))
     if header:
         cipher.update(header)
+        cipher.nonce = nonce
 
     # decrypt the data
     try:
@@ -190,24 +203,24 @@ def crypto_aes_get_nonce() -> bytes:
     return get_random_bytes(16)
 
 
-def __to_symmetric_mode(tag: SymmetricMode) -> Literal:
+def __to_symmetric_mode(tag: SymmetricMode) -> Literal[8, 9, 10, 11, 12]:
     """
     Convert the given SymmetricMode *tag* to its internal literal value.
 
     :param tag: the SymmetricMode value to convert
     :return: the corresponding internal literal value
     """
-    result: Literal = None
+    result: Literal[8, 9, 10, 11, 12]
     match tag:
         case SymmetricMode.CCM:
             result = AES.MODE_CCM
-        case SymmetricMode.EAX:
-            result = AES.MODE_EAX
-        case SymmetricMode.GCM:
-            result = AES.MODE_GCM
         case SymmetricMode.SIV:
             result = AES.MODE_SIV
+        case SymmetricMode.GCM:
+            result = AES.MODE_GCM
         case SymmetricMode.OCB:
             result = AES.MODE_OCB
+        case _:  # SymmetricMode.EAX:
+            result = AES.MODE_EAX
 
     return result

@@ -1,15 +1,12 @@
 import hashlib
 import pickle
 import sys
-from asn1crypto.x509 import Certificate
+from asn1crypto import x509
 from collections.abc import Iterable
 from contextlib import suppress
+from Crypto.Signature.pkcs1_15 import Hash as CryptoHash
 from Crypto.Cipher import AES
-from Crypto.Hash import SHA256
-from Crypto.Hash.SHA256 import SHA256Hash
-from Crypto.PublicKey.RSA import import_key, RsaKey
-from Crypto.Signature import pkcs1_15
-from Crypto.Signature.pkcs1_15 import PKCS115_SigScheme
+from Crypto.Cipher._mode_ecb import EcbMode
 from Crypto.Util.Padding import pad, unpad
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -74,64 +71,11 @@ CRYPTO_DEFAULT_HASH_ALGORITHM: Final[HashAlgorithm] = \
                  def_value=HashAlgorithm.SHA256)
 
 
-def crypto_validate_p7s(p7s_file: Path | str | bytes,
-                        p7s_payload: Path | str | bytes = None,
+def crypto_verify_pades(pdf_data: Path | str | bytes,
+                        cert_chain: Path | str | bytes = None,
                         errors: list[str] = None) -> bool:
     """
-    Validate the digital signature of a PKCS#7 file.
-
-     If a *list* is provided in *errors*, the following inconsistencies are reported:
-        - The digital signature is invalid
-        - Error from *CryptoPkcs7* instantiation
-
-    :param p7s_file: a p7s file path, or the bytes thereof
-    :param p7s_payload: a payload file path, or the bytes thereof
-    :param errors: incidental error messages
-    :return: *True* if the input data are consistent, *False* otherwise
-    """
-    # import
-    from . import crypto_pkcs7
-
-    # instantiate the return variable
-    result: bool = False
-
-    # instantiate the PKCS7 object
-    pkcs7: crypto_pkcs7.CryptoPkcs7 | None = None
-    try:
-        pkcs7 = crypto_pkcs7.CryptoPkcs7(p7s_file=p7s_file,
-                                         p7s_payload=p7s_payload)
-    except Exception as e:
-        if isinstance(errors, list):
-            exc_error: str = exc_format(exc=e,
-                                        exc_info=sys.exc_info())
-            errors.append(exc_error)
-
-    if pkcs7:
-        # verify the PKCS7 signature
-        try:
-            # noinspection PyUnboundLocalVariable
-            rsa_key: RsaKey = import_key(extern_key=pkcs7.public_bytes)
-            sig_scheme: PKCS115_SigScheme = pkcs1_15.new(rsa_key=rsa_key)
-            sha256_hash: SHA256Hash = SHA256.new(data=pkcs7.payload)
-            # TODO @gtnunes: fix the verification process  # noqa: FIX002, TD003
-            sig_scheme.verify(msg_hash=sha256_hash,
-                              signature=pkcs7.signature)
-            result = True
-        except ValueError:
-            if isinstance(errors, list):
-                errors.append("The digital signature is invalid")
-        except Exception as e:
-            if isinstance(errors, list):
-                errors.append(exc_format(exc=e,
-                                         exc_info=sys.exc_info()))
-    return result
-
-
-def crypto_validate_pdf(pdf_file: Path | str | bytes,
-                        certs_file: Path | str | bytes = None,
-                        errors: list[str] = None) -> bool:
-    """
-    Validate the digital signature of a PDF file.
+    Validate the embedded digital signature of a PDF file in *PAdES* format.
 
     If a *list* is provided in *errors*, the following inconsistencies are reported:
         - The file is not digitally signed
@@ -141,8 +85,8 @@ def crypto_validate_pdf(pdf_file: Path | str | bytes,
         - The signature block is not intact
         - A bad seed value found
 
-    :param pdf_file: a PDF file path, or the PDF file bytes
-    :param certs_file: a path to a file containing a PEM/DER-encoded certificate chain, or the bytes thereof
+    :param pdf_data: a PDF file path, or the PDF file bytes
+    :param cert_chain: a path to a file containing a PEM/DER-encoded certificate chain, or the bytes thereof
     :param errors: incidental error messages
     :return: *True* if the input data are consistent, *False* otherwise
     """
@@ -150,13 +94,13 @@ def crypto_validate_pdf(pdf_file: Path | str | bytes,
     result: bool = True
 
     # obtain the PDF reader
-    pdf_bytes: bytes = file_get_data(file_data=pdf_file)
+    pdf_bytes: bytes = file_get_data(file_data=pdf_data)
     pdf_reader: PdfFileReader = PdfFileReader(stream=BytesIO(initial_bytes=pdf_bytes))
 
     # obtain the validation context
-    certs: Iterable[Certificate] | None = None
-    if certs_file:
-        certs_bytes: bytes = file_get_data(file_data=certs_file)
+    certs: Iterable[x509.Certificate] | None = None
+    if cert_chain:
+        certs_bytes: bytes = file_get_data(file_data=cert_chain)
         if certs_bytes:
             certs = load_certs_from_pemder_data(cert_data_bytes=certs_bytes)
     validation_context: ValidationContext = ValidationContext(trust_roots=certs)
@@ -309,8 +253,8 @@ def crypto_encrypt(plaintext: Path | str | bytes,
     plaindata: bytes = file_get_data(file_data=plaintext)
 
     # build the cipher
-    cipher: AES = AES.new(key=key,
-                          mode=AES.MODE_ECB)
+    cipher: EcbMode = AES.new(key=key,
+                              mode=AES.MODE_ECB)
     # encrypt the data
     try:
         result = cipher.encrypt(plaintext=pad(data_to_pad=plaindata,
@@ -418,3 +362,32 @@ def crypto_pwd_verify(plain_pwd: str,
                                        salt=salt,
                                        errors=errors)
     return isinstance(pwd_hash, str) and cipher_pwd == pwd_hash
+
+
+def __crypto_hash(hash_alg: HashAlgorithm,
+                  payload: bytes) -> CryptoHash:
+    """
+    Construct the *Crypto* package's hash object corresponding top *hash_alg*.
+
+    :param hash_alg: the hash algorithm
+    :payload: the
+    """
+    result: CryptoHash | None = None
+    match hash_alg:
+        case HashAlgorithm.SHA1:
+            from Crypto.Hash import SHA1
+            result = SHA1.new(data=payload)
+        case HashAlgorithm.SHA224:
+            from Crypto.Hash import SHA224
+            result = SHA224.new(data=payload)
+        case HashAlgorithm.SHA256:
+            from Crypto.Hash import SHA256
+            result = SHA256.new(data=payload)
+        case HashAlgorithm.SHA384:
+            from Crypto.Hash import SHA384
+            result = SHA384.new(data=payload)
+        case HashAlgorithm.SHA512:
+            from Crypto.Hash import SHA512
+            result = SHA512.new(data=payload)
+
+    return result
