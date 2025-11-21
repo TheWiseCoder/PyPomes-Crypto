@@ -11,7 +11,6 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
-from enum import StrEnum, auto
 from io import BytesIO
 from logging import Logger
 from passlib.hash import argon2
@@ -22,58 +21,17 @@ from pyhanko.keys import load_certs_from_pemder_data
 from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign.validation import validate_pdf_signature
 from pyhanko.sign.validation.status import PdfSignatureStatus
-from pypomes_core import (
-    APP_PREFIX,
-    file_get_data, exc_format, env_get_enum
+from pypomes_core import file_get_data, exc_format
+from typing import Any
+
+from .crypto_common import (
+    CRYPTO_DEFAULT_HASH_ALGORITHM,
+    HashAlgorithm, CryptographyHashes, _cryptography_hash
 )
-from typing import Any, Final
-
-
-class SignatureMode(StrEnum):
-    """
-    Location of signatures with respect to the signed files.
-    """
-    ATTACHED = auto()
-    DETACHED = auto()
-
-
-class SignatureType(StrEnum):
-    """
-    Types of cryptographic signatures in documents.
-    """
-    CADES = "CAdES"
-    PADES = "PAdES"
-    XADES = "XAdES"
-
-
-class HashAlgorithm(StrEnum):
-    """
-    Supported hash algorithms.
-    """
-    MD5 = auto()
-    BLAKE2B = auto()
-    BLAKE2S = auto()
-    SHA1 = auto()
-    SHA224 = auto()
-    SHA256 = auto()
-    SHA384 = auto()
-    SHA512 = auto()
-    SHA3_224 = auto()
-    SHA3_256 = auto()
-    SHA3_384 = auto()
-    SHA3_512 = auto()
-    SHAKE_128 = auto()
-    SHAKE_256 = auto()
-
-
-CRYPTO_DEFAULT_HASH_ALGORITHM: Final[HashAlgorithm] = \
-    env_get_enum(key=f"{APP_PREFIX}_CRYPTO_DEFAULT_HASH_ALGORITHM",
-                 enum_class=HashAlgorithm,
-                 def_value=HashAlgorithm.SHA256)
 
 
 def crypto_hash(msg: Path | str | bytes,
-                alg: HashAlgorithm = CRYPTO_DEFAULT_HASH_ALGORITHM) -> bytes:
+                alg: HashAlgorithm | str = CRYPTO_DEFAULT_HASH_ALGORITHM) -> bytes:
     """
     Compute the hash of *msg*, using the algorithm specified in *alg*.
 
@@ -94,37 +52,37 @@ def crypto_hash(msg: Path | str | bytes,
     # initialize the return variable
     result: bytes | None = None
 
-    # instantiate the hasher (undeclared type is '_Hash')
-    hasher = hashlib.new(name=alg)
+    if alg in HashAlgorithm:
+        # instantiate the hasher (undeclared type is '_Hash')
+        hasher = hashlib.new(name=alg)
 
-    if isinstance(msg, bytes):
-        # argument is type 'bytes'
-        hasher.update(msg)
-        result = hasher.digest()
+        if isinstance(msg, bytes):
+            # argument is type 'bytes'
+            hasher.update(msg)
+            result = hasher.digest()
 
-    elif isinstance(msg, str):
-        # argument is type 'str'
-        hasher.update(msg.encode())
-        result = hasher.digest()
+        elif isinstance(msg, str):
+            # argument is type 'str'
+            hasher.update(msg.encode())
+            result = hasher.digest()
 
-    elif isinstance(msg, Path):
-        # argument is a file path
-        buf_size: int = 128 * 1024
-        with msg.open(mode="rb") as f:
-            file_bytes: bytes = f.read(buf_size)
-            while file_bytes:
-                hasher.update(file_bytes)
-                file_bytes = f.read(buf_size)
-        result = hasher.digest()
+        elif isinstance(msg, Path):
+            # argument is a file path
+            buf_size: int = 128 * 1024
+            with msg.open(mode="rb") as f:
+                file_bytes: bytes = f.read(buf_size)
+                while file_bytes:
+                    hasher.update(file_bytes)
+                    file_bytes = f.read(buf_size)
+            result = hasher.digest()
 
-    else:
-        # argument is unknown
-        with suppress(Exception):
-            data: bytes = pickle.dumps(obj=msg)
-            if data:
-                hasher.update(data)
-                result = hasher.digest()
-
+        else:
+            # argument is unknown
+            with suppress(Exception):
+                data: bytes = pickle.dumps(obj=msg)
+                if data:
+                    hasher.update(data)
+                    result = hasher.digest()
     return result
 
 
@@ -346,10 +304,9 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
 
     if not err_msg:
         # compute the digest
-        from .crypto_pkcs7 import CryptoPkcs7, CryptographyHashes
         hash_alg: str = signed_data["signer_infos"][0]["digest_algorithm"]["algorithm"].native
-        sig_hasher: CryptographyHashes = CryptoPkcs7.cryptography_hash(hash_alg=HashAlgorithm(hash_alg),
-                                                                       errors=errors) \
+        sig_hasher: CryptographyHashes = _cryptography_hash(hash_alg=HashAlgorithm(hash_alg),
+                                                            errors=errors) \
             if hash_alg in HashAlgorithm else None
 
         if sig_hasher:

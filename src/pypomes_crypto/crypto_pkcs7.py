@@ -4,7 +4,6 @@ import sys
 from asn1crypto import cms
 from datetime import datetime
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
@@ -18,11 +17,12 @@ from pathlib import Path
 from pypomes_core import file_get_data, exc_format
 from typing import Literal
 
-from .crypto_pomes import (
-    CRYPTO_DEFAULT_HASH_ALGORITHM, HashAlgorithm, SignatureMode, crypto_hash
+from .crypto_pomes import crypto_hash
+from .crypto_common import (
+    CRYPTO_DEFAULT_HASH_ALGORITHM,
+    SignatureMode, HashAlgorithm,
+    CryptographyHashes, _cryptography_hash
 )
-
-CryptographyHashes = hashes.SHA224 | hashes.SHA256 | hashes.SHA384 | hashes.SHA512
 
 
 class CryptoPkcs7:
@@ -113,9 +113,8 @@ class CryptoPkcs7:
             self.payload: bytes = signed_data["encap_content_info"]["content"].native
 
         # validate the signature
-        sig_hasher: CryptographyHashes = \
-            CryptoPkcs7.cryptography_hash(hash_alg=self.hash_algorithm,
-                                          errors=errors)
+        sig_hasher: CryptographyHashes = _cryptography_hash(hash_alg=self.hash_algorithm,
+                                                            errors=errors)
         try:
             self.public_key.verify(signature=self.signature,
                                    data=self.payload_hash,
@@ -204,7 +203,7 @@ class CryptoPkcs7:
         :param hash_alg: the algorithm for hashing
         :param sig_mode: whether to handle the payload as "attached"(defaults to "detached")
         :param errors: incidental errors
-        :return: an instance of *CryptoPkcs7*, or *None* if error
+        :return: the corresponding instance of *CryptoPkcs7*, or *None* if error
         """
         # initialize the return variable
         result: CryptoPkcs7 | None = None
@@ -224,8 +223,8 @@ class CryptoPkcs7:
         err_msg: str | None = None
         if cert_main and private_key:
             # prepare the PKCS#7 builder
-            sig_hasher: CryptographyHashes = CryptoPkcs7.cryptography_hash(hash_alg=hash_alg,
-                                                                           errors=errors)
+            sig_hasher: CryptographyHashes = _cryptography_hash(hash_alg=hash_alg,
+                                                                errors=errors)
             if sig_hasher:
                 builder: PKCS7SignatureBuilder = PKCS7SignatureBuilder()
                 builder = builder.set_data(data=doc_bytes)
@@ -272,36 +271,3 @@ class CryptoPkcs7:
         :param logger: the operations logger
         """
         CryptoPkcs7.logger = logger
-
-    @staticmethod
-    def cryptography_hash(hash_alg: HashAlgorithm,
-                          errors: list[str] = None) -> CryptographyHashes:
-        """
-        Construct the *Crypto* package's hash object corresponding top *hash_alg*.
-
-        :param hash_alg: the hash algorithm
-        :param errors: incidental errors
-        :return: the *Crypto* package's hash object, or *None* if error
-        """
-        result: CryptographyHashes | None = None
-        match hash_alg:
-            case HashAlgorithm.SHA224:
-                from cryptography.hazmat.primitives.hashes import SHA224
-                result = SHA224()
-            case HashAlgorithm.SHA256:
-                from cryptography.hazmat.primitives.hashes import SHA256
-                result = SHA256()
-            case HashAlgorithm.SHA384:
-                from cryptography.hazmat.primitives.hashes import SHA384
-                result = SHA384()
-            case HashAlgorithm.SHA512:
-                from cryptography.hazmat.primitives.hashes import SHA512
-                result = SHA512()
-            case _:
-                msg = f"Hash algorithm not supported: '{hash_alg}'"
-                if CryptoPkcs7.logger:
-                    CryptoPkcs7.logger.error(msg=msg)
-                if isinstance(errors, list):
-                    errors.append(msg)
-
-        return result
