@@ -1,18 +1,19 @@
 import hashlib
 import pickle
 import sys
-from asn1crypto import x509
+from asn1crypto import cms
 from collections.abc import Iterable
 from contextlib import suppress
-from Crypto.Signature.pkcs1_15 import Hash as CryptoHash
 from Crypto.Cipher import AES
 from Crypto.Cipher._mode_ecb import EcbMode
 from Crypto.Util.Padding import pad, unpad
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from enum import StrEnum, auto
 from io import BytesIO
+from logging import Logger
 from passlib.hash import argon2
 from pathlib import Path
 from pyhanko.sign.validation.pdf_embedded import EmbeddedPdfSignature
@@ -25,7 +26,7 @@ from pypomes_core import (
     APP_PREFIX,
     file_get_data, exc_format, env_get_enum
 )
-from typing import Final
+from typing import Any, Final
 
 
 class SignatureMode(StrEnum):
@@ -71,76 +72,6 @@ CRYPTO_DEFAULT_HASH_ALGORITHM: Final[HashAlgorithm] = \
                  def_value=HashAlgorithm.SHA256)
 
 
-def crypto_verify_pades(pdf_data: Path | str | bytes,
-                        cert_chain: Path | str | bytes = None,
-                        errors: list[str] = None) -> bool:
-    """
-    Validate the embedded digital signature of a PDF file in *PAdES* format.
-
-    If a *list* is provided in *errors*, the following inconsistencies are reported:
-        - The file is not digitally signed
-        - The digital signature is not valid
-        - The certificate used has been revoked
-        - The certificate used is not trusted
-        - The signature block is not intact
-        - A bad seed value found
-
-    :param pdf_data: a PDF file path, or the PDF file bytes
-    :param cert_chain: a path to a file containing a PEM/DER-encoded certificate chain, or the bytes thereof
-    :param errors: incidental error messages
-    :return: *True* if the input data are consistent, *False* otherwise
-    """
-    # initialize the return variable
-    result: bool = True
-
-    # obtain the PDF reader
-    pdf_bytes: bytes = file_get_data(file_data=pdf_data)
-    pdf_reader: PdfFileReader = PdfFileReader(stream=BytesIO(initial_bytes=pdf_bytes))
-
-    # obtain the validation context
-    certs: Iterable[x509.Certificate] | None = None
-    if cert_chain:
-        certs_bytes: bytes = file_get_data(file_data=cert_chain)
-        if certs_bytes:
-            certs = load_certs_from_pemder_data(cert_data_bytes=certs_bytes)
-    validation_context: ValidationContext = ValidationContext(trust_roots=certs)
-
-    # obtain the list of digital signatures
-    signatures: list[EmbeddedPdfSignature] = pdf_reader.embedded_signatures
-
-    # were signatures retrieved ?
-    if signatures:
-        # yes, traverse the list verifying them
-        for signature in signatures:
-            error: str | None = None
-            status: PdfSignatureStatus = validate_pdf_signature(embedded_sig=signature,
-                                                                signer_validation_context=validation_context)
-            if status.revoked:
-                error = "The certificate used has been revoked"
-            elif not status.intact:
-                error = "The signature block is not intact"
-            elif not status.trusted and certs:
-                error = "The certificate used is not trusted"
-            elif not status.seed_value_ok:
-                error = "A bad seed value found"
-            elif not status.valid:
-                error = "The digital signature is not valid"
-
-            # has an error been flagged ?
-            if error:
-                # yes, report it
-                if isinstance(errors, list):
-                    errors.append(error)
-                result = False
-    else:
-        # no, report the problem
-        if isinstance(errors, list):
-            errors.append("The file is not digitally signed")
-        result = False
-
-    return result
-
-
 def crypto_hash(msg: Path | str | bytes,
                 alg: HashAlgorithm = CRYPTO_DEFAULT_HASH_ALGORITHM) -> bytes:
     """
@@ -163,10 +94,9 @@ def crypto_hash(msg: Path | str | bytes,
     # initialize the return variable
     result: bytes | None = None
 
-    # instantiate the hasher (undeclared type type is '_Hash')
+    # instantiate the hasher (undeclared type is '_Hash')
     hasher = hashlib.new(name=alg)
 
-    # what is the type of the message ?
     if isinstance(msg, bytes):
         # argument is type 'bytes'
         hasher.update(msg)
@@ -364,30 +294,166 @@ def crypto_pwd_verify(plain_pwd: str,
     return isinstance(pwd_hash, str) and cipher_pwd == pwd_hash
 
 
-def __crypto_hash(hash_alg: HashAlgorithm,
-                  payload: bytes) -> CryptoHash:
+def crypto_verify_p7s(p7s_data: Path | str | bytes,
+                      doc_data: Path | str | bytes,
+                      errors: list[str] = None,
+                      logger: Logger = None) -> bool | None:
     """
-    Construct the *Crypto* package's hash object corresponding top *hash_alg*.
+    Verify a PKCS#7 signature against a document.
 
-    :param hash_alg: the hash algorithm
-    :payload: the
+    The natures of *p7s_data* and *doc_data* depend on their respective data types:
+      - type *bytes*: holds the data (used as is)
+      - type *str*: holds the data (used as utf8-encoded)
+      - type *Path*: is a path to a file holding the data
+
+    Both attached and detached signatures are properly handled, and full cryptographic verification
+    (digest + RSA signature check) is performed. The PKCS#7 data provided in *p7s_data* contains the
+    A1 certificate and its corresponding public key, the certificate chain, the original payload
+    (if *attached* mode, only), and the digital signature.
+
+    :param p7s_data: the PKCS#7 signature data containing A1 certificate
+    :param doc_data: the original document data (required for detached mode)
+    :param errors: incidental errors
+    :param logger: optional logger
+     :return: *True* if signature is valid, *False* otherwise, or *None* if error
     """
-    result: CryptoHash | None = None
-    match hash_alg:
-        case HashAlgorithm.SHA1:
-            from Crypto.Hash import SHA1
-            result = SHA1.new(data=payload)
-        case HashAlgorithm.SHA224:
-            from Crypto.Hash import SHA224
-            result = SHA224.new(data=payload)
-        case HashAlgorithm.SHA256:
-            from Crypto.Hash import SHA256
-            result = SHA256.new(data=payload)
-        case HashAlgorithm.SHA384:
-            from Crypto.Hash import SHA384
-            result = SHA384.new(data=payload)
-        case HashAlgorithm.SHA512:
-            from Crypto.Hash import SHA512
-            result = SHA512.new(data=payload)
+    # initialize the return variable
+    result: bool | None = None
+
+    # retrieve the certificate raw bytes
+    p7_bytes: bytes = file_get_data(file_data=p7s_data)
+
+    # parse the CMS structure
+    err_msg: str | None = None
+    signed_data: dict[str, Any] | None = None
+    content_to_verify: bytes | None = None
+    content_info = cms.ContentInfo.load(encoded_data=p7_bytes)
+    if content_info["content_type"].native == "signed_data":
+        signed_data = content_info["content"]
+        embedded_content: bytes = signed_data["encap_content_info"]["content"].native
+
+        # determine attached vs detached
+        if embedded_content:
+            # attached mode: use embedded content for digest
+            content_to_verify = embedded_content
+        else:
+            # detached mode: use external document
+            content_to_verify = file_get_data(file_data=doc_data)
+            if not content_to_verify:
+                err_msg = "No payload found for sitgnature verification"
+    else:
+        err_msg = "'p7_data' is not a SignedData PKCS#7 structure"
+
+    if not err_msg:
+        # compute the digest
+        from .crypto_pkcs7 import CryptoPkcs7, CryptographyHashes
+        hash_alg: str = signed_data["signer_infos"][0]["digest_algorithm"]["algorithm"].native
+        sig_hasher: CryptographyHashes = CryptoPkcs7.cryptography_hash(hash_alg=HashAlgorithm(hash_alg),
+                                                                       errors=errors) \
+            if hash_alg in HashAlgorithm else None
+
+        if sig_hasher:
+            computed_digest: bytes = crypto_hash(msg=content_to_verify,
+                                                 alg=HashAlgorithm(hash_alg))
+            # extract the signer info
+            signer_info = signed_data["signer_infos"][0]
+            signature_bytes = signer_info["signature"].native
+
+            # extract certificate
+            cert_data = signed_data["certificates"][0].chosen.dump()
+            cert = x509.load_der_x509_certificate(cert_data)
+            public_key = cert.public_key()
+
+            # Verify signature using RSA + PKCS#1 v1.5
+            try:
+                public_key.verify(signature=signature_bytes,
+                                  data=computed_digest,
+                                  padding=padding.PKCS1v15(),
+                                  algorithm=sig_hasher)
+                result = True
+                if logger:
+                    logger.debug(msg="Signature verification successful")
+            except Exception as e:
+                result = False
+                if logger:
+                    logger.debug(msg=f"Signature verification failed: {e}")
+    if err_msg:
+        if logger:
+            logger.error(msg=err_msg)
+        if isinstance(errors, list):
+            errors.append(err_msg)
+
+    return result
+
+
+def crypto_verify_pdf(pdf_data: Path | str | bytes,
+                      cert_chain: Path | str | bytes = None,
+                      errors: list[str] = None) -> bool:
+    """
+    Validate the embedded digital signature of a PDF file in *PAdES* format.
+
+    The nature of *pdf_data* depends on its data type:
+      - type *bytes*: *pdf_data* holds the data (used as is)
+      - type *str*: *pdf_data* holds the data (used as utf8-encoded)
+      - type *Path*: *pdf_data* is a path to a file holding the data
+
+    If a *list* is provided in *errors*, the following inconsistencies are reported:
+        - The file is not digitally signed
+        - The digital signature is not valid
+        - The certificate used has been revoked
+        - The certificate used is not trusted
+        - The signature block is not intact
+        - A bad seed value found
+
+    :param pdf_data: a PDF file path, or the PDF file bytes
+    :param cert_chain: a path to a file containing a PEM/DER-encoded certificate chain, or the bytes thereof
+    :param errors: incidental error messages
+    :return: *True* if the input data are consistent, *False* otherwise
+    """
+    # initialize the return variable
+    result: bool = True
+
+    # obtain the PDF reader
+    pdf_bytes: bytes = file_get_data(file_data=pdf_data)
+    pdf_reader: PdfFileReader = PdfFileReader(stream=BytesIO(initial_bytes=pdf_bytes))
+
+    # obtain the validation context
+    certs: Iterable[x509.Certificate] | None = None
+    if cert_chain:
+        certs_bytes: bytes = file_get_data(file_data=cert_chain)
+        if certs_bytes:
+            certs = load_certs_from_pemder_data(cert_data_bytes=certs_bytes)
+    validation_context: ValidationContext = ValidationContext(trust_roots=certs)
+
+    # obtain the list of digital signatures
+    signatures: list[EmbeddedPdfSignature] = pdf_reader.embedded_signatures
+
+    if signatures:
+        # signatures retrieved, traverse the list verifying them
+        for signature in signatures:
+            err_msg: str | None = None
+            status: PdfSignatureStatus = validate_pdf_signature(embedded_sig=signature,
+                                                                signer_validation_context=validation_context)
+            if status.revoked:
+                err_msg = "The certificate used has been revoked"
+            elif not status.intact:
+                err_msg = "The signature block is not intact"
+            elif not status.trusted and certs:
+                err_msg = "The certificate used is not trusted"
+            elif not status.seed_value_ok:
+                err_msg = "A bad seed value found"
+            elif not status.valid:
+                err_msg = "The digital signature is not valid"
+
+            if err_msg:
+                # an error has been flagged, report it
+                if isinstance(errors, list):
+                    errors.append(err_msg)
+                result = False
+    else:
+        # signatures not retrieved, report the problem
+        if isinstance(errors, list):
+            errors.append("The file is not digitally signed")
+        result = False
 
     return result

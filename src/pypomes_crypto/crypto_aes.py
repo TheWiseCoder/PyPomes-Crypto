@@ -40,8 +40,8 @@ CRYPTO_DEFAULT_SYMMETRIC_MODE: Final[SymmetricMode] = \
 
 def crypto_aes_encrypt(plaintext: Path | str | bytes,
                        key: bytes,
-                       header: bytes = None,
                        nonce: bytes = None,
+                       header: bytes = None,
                        mode: SymmetricMode = SymmetricMode.EAX,
                        errors: list[str] = None) -> tuple[bytes, bytes, bytes]:
     """
@@ -88,8 +88,8 @@ def crypto_aes_encrypt(plaintext: Path | str | bytes,
 
     :param plaintext: the message to encrypt
     :param key: the cryptographic key
-    :param header: the optional message header
     :param nonce: the optional cryptographic *number once* value
+    :param header: the optional message header
     :param mode: the chaining mode to use (defaults to *EAX*)
     :param errors: incidental error messages
     :return: a tuple containing the encrypted message, and the *nonce* and *MAC* tag used, or *None* on error
@@ -106,8 +106,7 @@ def crypto_aes_encrypt(plaintext: Path | str | bytes,
                               mode=__to_symmetric_mode(mode))
     if header:
         cipher.update(header)
-        if nonce:
-            cipher.nonce = nonce
+    cipher.nonce = nonce or get_random_bytes(16)
 
     # encrypt the data
     try:
@@ -140,7 +139,7 @@ def crypto_aes_decrypt(ciphertext: Path | str | bytes,
     (*nonce*) and the authentication *MAC* tag (*mac_tag*) must be the ones returned by the encryption process.
     The *mac_tag* allows the cipher to provide cryptographic *authentication*.
 
-    The nature of *ciphertext* dependes on its data type:
+    The nature of *ciphertext* depends on its data type:
       - type *bytes*: *ciphertext* holds the data (used as is)
       - type *str*: *ciphertext* holds the data (used as utf8-encoded)
       - type *Path*: *ciphertext* is a path to a file holding the data
@@ -176,7 +175,7 @@ def crypto_aes_decrypt(ciphertext: Path | str | bytes,
                               mode=__to_symmetric_mode(mode))
     if header:
         cipher.update(header)
-        cipher.nonce = nonce
+    cipher.nonce = nonce
 
     # decrypt the data
     try:
@@ -189,18 +188,6 @@ def crypto_aes_decrypt(ciphertext: Path | str | bytes,
             errors.append(exc_error)
 
     return result
-
-
-def crypto_aes_get_nonce() -> bytes:
-    """
-    Generate and return a random *number once* (*nonce*) value for cryptography use.
-
-    This function is provided as a convenience, as it simply
-    invokes *Crypto.Random.get_random_bytes(16)* for a suitable value.
-
-    :return: a random *number once* value
-    """
-    return get_random_bytes(16)
 
 
 def __to_symmetric_mode(tag: SymmetricMode) -> Literal[8, 9, 10, 11, 12]:

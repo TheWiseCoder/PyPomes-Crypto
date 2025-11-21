@@ -24,9 +24,10 @@ from .crypto_pomes import (
 
 CryptographyHashes = hashes.SHA224 | hashes.SHA256 | hashes.SHA384 | hashes.SHA512
 
+
 class CryptoPkcs7:
     """
-    Python code to extract relevant data from a PKCS#7 signature file.
+    Python code to extract crypto data from a PKCS#7 signature file.
 
     These are the instance attributes:
         - p7s_bytes: bytes              - the PKCS#7 data
@@ -47,9 +48,9 @@ class CryptoPkcs7:
                  doc_data: Path | str | bytes = None,
                  errors: list[str] = None) -> None:
         """
-        Instantiate the *CryptoPkcs7* class, and extract the relevant data.
+        Instantiate the *CryptoPkcs7* class, and extract the relevant crypto data.
 
-        The nature of *p7s_data* and *doc_data* depend on their respective data types:
+        The natures of *p7s_data* and *doc_data* depend on their respective data types:
           - type *bytes*: holds the data (used as is)
           - type *str*: holds the data (used as utf8-encoded)
           - type *Path*: is a path to a file holding the data
@@ -113,8 +114,8 @@ class CryptoPkcs7:
 
         # validate the signature
         sig_hasher: CryptographyHashes = \
-            CryptoPkcs7.__cryptography_hash(hash_alg=self.hash_algorithm,
-                                            errors=errors)
+            CryptoPkcs7.cryptography_hash(hash_alg=self.hash_algorithm,
+                                          errors=errors)
         try:
             self.public_key.verify(signature=self.signature,
                                    data=self.payload_hash,
@@ -188,7 +189,7 @@ class CryptoPkcs7:
         """
         Instantiate a *CryptoPkcs7* object by signing a document with a type A1 certificate.
 
-        The nature of *doc_data* and *p12_data* depend on their respective data types:
+        The natures of *doc_data* and *p12_data* depend on their respective data types:
           - type *bytes*: holds the data (used as is)
           - type *str*: holds the data (used as utf8-encoded)
           - type *Path*: is a path to a file holding the data
@@ -223,8 +224,8 @@ class CryptoPkcs7:
         err_msg: str | None = None
         if cert_main and private_key:
             # prepare the PKCS#7 builder
-            sig_hasher: CryptographyHashes = CryptoPkcs7.__cryptography_hash(hash_alg=hash_alg,
-                                                                             errors=errors)
+            sig_hasher: CryptographyHashes = CryptoPkcs7.cryptography_hash(hash_alg=hash_alg,
+                                                                           errors=errors)
             if sig_hasher:
                 builder: PKCS7SignatureBuilder = PKCS7SignatureBuilder()
                 builder = builder.set_data(data=doc_bytes)
@@ -273,13 +274,14 @@ class CryptoPkcs7:
         CryptoPkcs7.logger = logger
 
     @staticmethod
-    def __cryptography_hash(hash_alg: HashAlgorithm,
-                            errors: list[str] = None) -> CryptographyHashes:
+    def cryptography_hash(hash_alg: HashAlgorithm,
+                          errors: list[str] = None) -> CryptographyHashes:
         """
         Construct the *Crypto* package's hash object corresponding top *hash_alg*.
 
         :param hash_alg: the hash algorithm
-        :payload: the
+        :param errors: incidental errors
+        :return: the *Crypto* package's hash object, or *None* if error
         """
         result: CryptographyHashes | None = None
         match hash_alg:
