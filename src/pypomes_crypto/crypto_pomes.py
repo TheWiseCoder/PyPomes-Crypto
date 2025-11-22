@@ -345,7 +345,8 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
 
 def crypto_verify_pdf(pdf_data: Path | str | bytes,
                       cert_chain: Path | str | bytes = None,
-                      errors: list[str] = None) -> bool:
+                      errors: list[str] = None,
+                      logger: Logger = None) -> bool:
     """
     Validate the embedded digital signature of a PDF file in *PAdES* format.
 
@@ -365,6 +366,7 @@ def crypto_verify_pdf(pdf_data: Path | str | bytes,
     :param pdf_data: a PDF file path, or the PDF file bytes
     :param cert_chain: optional PEM/DER-encoded certificate chain
     :param errors: incidental error messages (may be non-empty)
+    :param logger: optional logger
     :return: *True* if the signature is valid, *False* otherwise
     """
     # initialize the return variable
@@ -404,13 +406,18 @@ def crypto_verify_pdf(pdf_data: Path | str | bytes,
 
             if err_msg:
                 # an error has been flagged, report it
+                if logger:
+                    logger.error(msg=err_msg)
                 if isinstance(errors, list):
                     errors.append(err_msg)
                 result = False
     else:
         # signatures not retrieved, report the problem
+        msg: str = "The file is not digitally signed"
+        if logger:
+            logger.error(msg=msg)
         if isinstance(errors, list):
-            errors.append("The file is not digitally signed")
+            errors.append(msg)
         result = False
 
     return result
