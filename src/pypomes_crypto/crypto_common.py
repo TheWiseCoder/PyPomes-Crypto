@@ -64,17 +64,13 @@ def _cryptography_hash(hash_alg: HashAlgorithm | str,
     result: CryptographyHashes | None = None
     match hash_alg:
         case HashAlgorithm.SHA224:
-            from cryptography.hazmat.primitives.hashes import SHA224
-            result = SHA224()
+            result = hashes.SHA224()
         case HashAlgorithm.SHA256:
-            from cryptography.hazmat.primitives.hashes import SHA256
-            result = SHA256()
+            result = hashes.SHA256()
         case HashAlgorithm.SHA384:
-            from cryptography.hazmat.primitives.hashes import SHA384
-            result = SHA384()
+            result = hashes.SHA384()
         case HashAlgorithm.SHA512:
-            from cryptography.hazmat.primitives.hashes import SHA512
-            result = SHA512()
+            result = hashes.SHA512()
         case _:
             msg = f"Hash algorithm not supported: '{hash_alg}'"
             if logger:

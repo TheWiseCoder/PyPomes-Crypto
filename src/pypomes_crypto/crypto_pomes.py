@@ -131,7 +131,7 @@ def crypto_encrypt(plaintext: Path | str | bytes,
 
     :param plaintext: the message to encrypt
     :param key: the cryptographic key (byte length must be 16, 24 or 32)
-    :param errors: incidental error messages
+    :param errors: incidental error messages (may be non-empty)
     :return: the encrypted message, or *None* if error
     """
     # initialize the return variable
@@ -180,7 +180,7 @@ def crypto_decrypt(ciphertext: Path | str | bytes,
 
     :param ciphertext: the message to decrypt
     :param key: the cryptographic key
-    :param errors: incidental error messages
+    :param errors: incidental error messages (may be non-empty)
     :return: the decrypted message, or *None* if error
     """
     # initialize the return variable
@@ -215,7 +215,7 @@ def crypto_pwd_encrypt(pwd: str,
 
     :param pwd: the password to encrypt
     :param salt: the salt value to use (must be at least 8 bytes long)
-    :param errors: incidental error messages
+    :param errors: incidental error messages (may be non-empty)
     :return: the encrypted password, or *None* if error
     """
     # initialize the return variable
@@ -243,7 +243,7 @@ def crypto_pwd_verify(plain_pwd: str,
     :param plain_pwd: the plaintext password
     :param cipher_pwd: the encryped password to verify
     :param salt: the salt value to use (must be at least 8 bytes long)
-    :param errors: incidental error messages
+    :param errors: incidental error messages (may be non-empty)
     :return: *True* if they match, *False* otherwise
     """
     pwd_hash: str = crypto_pwd_encrypt(pwd=plain_pwd,
@@ -271,7 +271,7 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
 
     :param p7s_data: the PKCS#7 signature data containing A1 certificate
     :param doc_data: the original document data (required for detached mode)
-    :param errors: incidental errors
+    :param errors: incidental errors (may be non-empty)
     :param logger: optional logger
      :return: *True* if signature is valid, *False* otherwise, or *None* if error
     """
@@ -363,9 +363,9 @@ def crypto_verify_pdf(pdf_data: Path | str | bytes,
         - A bad seed value found
 
     :param pdf_data: a PDF file path, or the PDF file bytes
-    :param cert_chain: a path to a file containing a PEM/DER-encoded certificate chain, or the bytes thereof
-    :param errors: incidental error messages
-    :return: *True* if the input data are consistent, *False* otherwise
+    :param cert_chain: optional PEM/DER-encoded certificate chain
+    :param errors: incidental error messages (may be non-empty)
+    :return: *True* if the signature is valid, *False* otherwise
     """
     # initialize the return variable
     result: bool = True

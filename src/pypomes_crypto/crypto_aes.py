@@ -91,7 +91,7 @@ def crypto_aes_encrypt(plaintext: Path | str | bytes,
     :param nonce: the optional cryptographic *number once* value
     :param header: the optional message header
     :param mode: the chaining mode to use (defaults to *EAX*)
-    :param errors: incidental error messages
+    :param errors: incidental error messages (may be non-empty)
     :return: a tuple containing the encrypted message, and the *nonce* and *MAC* tag used, or *None* on error
     """
     # initialize the return variable
@@ -160,7 +160,7 @@ def crypto_aes_decrypt(ciphertext: Path | str | bytes,
     :param nonce: the cryptographic *number once* value
     :param header: the optional message header
     :param mode: the chaining mode to use (defaults to *EAX*)
-    :param errors: incidental error messages
+    :param errors: incidental error messages (may be non-empty)
     :return: the decrypted message, or *None* on error
     """
     # initialize the return variable

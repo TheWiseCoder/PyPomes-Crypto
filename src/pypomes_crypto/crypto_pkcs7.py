@@ -202,7 +202,7 @@ class CryptoPkcs7:
         :param cert_pwd: password for the *.pfx* data
         :param hash_alg: the algorithm for hashing
         :param sig_mode: whether to handle the payload as "attached"(defaults to "detached")
-        :param errors: incidental errors
+        :param errors: incidental errors (may be non-empty)
         :return: the corresponding instance of *CryptoPkcs7*, or *None* if error
         """
         # initialize the return variable
