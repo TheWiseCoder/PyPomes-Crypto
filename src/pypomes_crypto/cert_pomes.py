@@ -1,5 +1,4 @@
 import sys
-
 import certifi
 import requests
 from contextlib import suppress
@@ -12,14 +11,13 @@ from cryptography.x509.ocsp import OCSPRequestBuilder, load_der_ocsp_response
 from datetime import datetime, UTC
 from logging import Logger
 from pathlib import Path
-from typing import Any
-
 from pypomes_core import exc_format
+from typing import Any
 
 from .crypto_common import ChpPublicKey
 
 
-def cert_load_trust_store() -> list[x509.Certificate]:
+def cert_load_trusted() -> list[x509.Certificate]:
     """
     Retrieve the certificates in the trusted store of the host OS.
 
@@ -42,10 +40,10 @@ def cert_load_trust_store() -> list[x509.Certificate]:
     return result
 
 
-def cert_validate_chain(cert_chain: list[x509.Certificate],
-                        trusted_roots: list[x509.Certificate] = None,
-                        errors: list[str] = None,
-                        logger: Logger = None) -> None:
+def cert_verify_chain(cert_chain: list[x509.Certificate],
+                      trusted_roots: list[x509.Certificate] = None,
+                      errors: list[str] = None,
+                      logger: Logger = None) -> bool:
     """
     Validate the certificates *cert_chain*, optionally using the trusted roots in *trusted_roots*.
 
@@ -55,13 +53,13 @@ def cert_validate_chain(cert_chain: list[x509.Certificate],
     :param trusted_roots: optional list of trusted roots to check the last certificate with
     :param errors: incidental errors (may be non-empty)
     :param logger: optional logger
+    :return: True if *cert_chain* is valid, *False* otherwise
     """
-    now: datetime = datetime.now(tz=UTC)
-
     # define a local errors lista
     curr_errors: list[str] = []
 
     # check validity and BasicConstraints
+    now: datetime = datetime.now(tz=UTC)
     err_msg: str | None = None
     for idx, cert in enumerate(iterable=cert_chain):
         if now < cert.not_valid_before:
@@ -109,6 +107,8 @@ def cert_validate_chain(cert_chain: list[x509.Certificate],
 
     if curr_errors and isinstance(errors, list):
         errors.extend(curr_errors)
+
+    return not curr_errors
 
 
 def cert_verify_signature(cert: x509.Certificate,
@@ -167,7 +167,7 @@ def cert_verify_revocation(cert: x509.Certificate,
                            issuer_cert: x509.Certificate,
                            logger: Logger = None) -> bool:
     """
-    Verify whether *cert* is good standing, and has not been revoked.
+    Verify whether *cert* is good standing, that is, it has not been revoked.
 
     Two attempts are carried out to make sure ther certificate is still in good standing:
         - the appropriate *Certificate Revocation Lists* (CRLs) are inspected

@@ -1,5 +1,6 @@
 from .cert_pomes import (
-    cert_load_trust_store
+    cert_load_trusted, cert_verify_chain,
+    cert_verify_signature, cert_verify_revocation
 )
 from .crypto_aes import (
     CRYPTO_DEFAULT_SYMMETRIC_MODE, SymmetricMode,
@@ -29,7 +30,8 @@ from .jwt_pomes import (
 
 __all__ = [
     # cert_pomes
-    "cert_load_trust_store",
+    "cert_load_trusted", "cert_verify_chain",
+    "cert_verify_signature", "cert_verify_revocation",
     # crypto_aes
     "SymmetricMode",
     "crypto_aes_encrypt", "crypto_aes_decrypt",

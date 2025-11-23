@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pypomes_crypto"
-version = "0.5.5"
+version = "0.5.6"
 authors = [
   { name="GT Nunes", email="wisecoder01@gmail.com" }
 ]

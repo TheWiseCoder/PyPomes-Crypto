@@ -15,12 +15,12 @@ from io import BytesIO
 from logging import Logger
 from passlib.hash import argon2
 from pathlib import Path
-from pyhanko.sign.validation.pdf_embedded import EmbeddedPdfSignature
-from pyhanko_certvalidator import ValidationContext
 from pyhanko.keys import load_certs_from_pemder_data
 from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign.validation import validate_pdf_signature
+from pyhanko.sign.validation.pdf_embedded import EmbeddedPdfSignature
 from pyhanko.sign.validation.status import PdfSignatureStatus
+from pyhanko_certvalidator import ValidationContext
 from pypomes_core import file_get_data, exc_format
 from typing import Any
 

@@ -1,4 +1,3 @@
-from __future__ import annotations
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed25519, ed448, rsa, x25519, x448
 from enum import StrEnum, auto
