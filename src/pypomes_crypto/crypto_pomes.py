@@ -26,7 +26,7 @@ from typing import Any
 
 from .crypto_common import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
-    HashAlgorithm, CryptographyHashes, _cryptography_hash
+    HashAlgorithm, ChpHash, _chp_hash
 )
 
 
@@ -305,8 +305,8 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
     if not err_msg:
         # compute the digest
         hash_alg: str = signed_data["signer_infos"][0]["digest_algorithm"]["algorithm"].native
-        sig_hasher: CryptographyHashes = _cryptography_hash(hash_alg=HashAlgorithm(hash_alg),
-                                                            errors=errors) \
+        sig_hasher: ChpHash = _chp_hash(alg=HashAlgorithm(hash_alg),
+                                        errors=errors) \
             if hash_alg in HashAlgorithm else None
 
         if sig_hasher:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed25519, ed448, rsa, x25519, x448
 from enum import StrEnum, auto
 from logging import Logger
 from pypomes_core import env_get_enum, APP_PREFIX
@@ -43,7 +44,10 @@ class HashAlgorithm(StrEnum):
     SHAKE_256 = auto()
 
 
-CryptographyHashes = hashes.SHA224 | hashes.SHA256 | hashes.SHA384 | hashes.SHA512
+ChpHash = hashes.SHA224 | hashes.SHA256 | hashes.SHA384 | hashes.SHA512
+
+ChpPublicKey = (dsa.DSAPublicKey | rsa.RSAPublicKey | ec.EllipticCurvePublicKey |
+                ed25519.Ed25519PublicKey | ed448.Ed448PublicKey | x25519.X25519PublicKey | x448.X448PublicKey)
 
 CRYPTO_DEFAULT_HASH_ALGORITHM: Final[HashAlgorithm] = \
     env_get_enum(key=f"{APP_PREFIX}_CRYPTO_DEFAULT_HASH_ALGORITHM",
@@ -51,18 +55,20 @@ CRYPTO_DEFAULT_HASH_ALGORITHM: Final[HashAlgorithm] = \
                  def_value=HashAlgorithm.SHA256)
 
 
-def _cryptography_hash(hash_alg: HashAlgorithm | str,
-                       errors: list[str] = None,
-                       logger: Logger = None) -> CryptographyHashes:
+def _chp_hash(alg: HashAlgorithm | str,
+              errors: list[str] = None,
+              logger: Logger = None) -> ChpHash:
     """
-    Construct the *Crypto* package's hash object corresponding top *hash_alg*.
+    Construct the *cryptography* package's hash object corresponding top *hash_alg*.
 
-    :param hash_alg: the hash algorithm
+    The hash object is an instance of *cryptography.hazmat.primitives.hashes.<hash>*
+
+    :param alg: the hash algorithm
     :param errors: incidental errors
     :return: the *Crypto* package's hash object, or *None* if error
     """
-    result: CryptographyHashes | None = None
-    match hash_alg:
+    result: ChpHash | None = None
+    match alg:
         case HashAlgorithm.SHA224:
             result = hashes.SHA224()
         case HashAlgorithm.SHA256:
@@ -72,7 +78,7 @@ def _cryptography_hash(hash_alg: HashAlgorithm | str,
         case HashAlgorithm.SHA512:
             result = hashes.SHA512()
         case _:
-            msg = f"Hash algorithm not supported: '{hash_alg}'"
+            msg = f"Hash algorithm not supported: '{alg}'"
             if logger:
                 logger.error(msg=msg)
             if isinstance(errors, list):

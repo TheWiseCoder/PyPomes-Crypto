@@ -1,15 +1,18 @@
 from __future__ import annotations  # allow forward references
 import base64
 import sys
-from asn1crypto import cms
+from asn1crypto import cms, tsp
 from datetime import datetime
+from dataclasses import dataclass
 from cryptography import x509
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives.serialization.pkcs7 import (
-    PKCS7Options, PKCS7SignatureBuilder, load_der_pkcs7_certificates
+    PKCS7Options, PKCS7SignatureBuilder
 )
 from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
 from logging import Logger
@@ -17,11 +20,10 @@ from pathlib import Path
 from pypomes_core import file_get_data, exc_format
 from typing import Literal
 
-from .crypto_pomes import crypto_hash
 from .crypto_common import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
     SignatureMode, HashAlgorithm,
-    CryptographyHashes, _cryptography_hash
+    ChpHash, ChpPublicKey, _chp_hash
 )
 
 
@@ -40,8 +42,33 @@ class CryptoPkcs7:
         - public_key: RSAPublicKey      - the RSA public key
         - cert_chain: list[bytes]       - the serialized X509 certificate chain (in DER format)
     """
-
+    # class-level logger
     logger: Logger | None = None
+
+    @dataclass(frozen=True)
+    class SignatureInfo:
+        """
+        These are the attributes holding the signature data.
+        """
+        payload: bytes                 # the payload (embedded or external)
+        payload_hash: bytes            # the payload hash
+        hash_algorithm: HashAlgorithm  # the algorithm used to calculate the payload hash
+        signature: bytes               # the digital signature
+        signature_algorithm: str       # the algorithm used to generate the signature
+        signature_timestamp: datetime  # the signature's timestamp
+        public_key: ChpPublicKey       # the public key (most likely, RSAPublicKey)
+        cert_chain: list[bytes]        # the serialized X509 certificate chain (in DER format)
+        signer_cert: x509.Certificate  # the reference certificate (latest one in the certificate chain)
+        cert_serial_number: int        # the certificate's serial nmumber
+        signer_common_name: str        # the name of the certificate's signer
+        cert_issuer_name: str          # the name of the certificate's issuer
+        cert_fingerprint: str          # the certificate's fingerprint
+
+        # TSA (Tme Stamping Authority) data
+        tsa_timestamp: datetime        # the signature's timestamp
+        tsa_policy: str                # the TSA's policy
+        tsa_serial_number: str         # the timestamping's serial number
+        tsa_fingerprint: str           # the timestamping's fingerprint
 
     def __init__(self,
                  p7s_data: Path | str | bytes,
@@ -64,96 +91,233 @@ class CryptoPkcs7:
         :param doc_data: the original document data (the payload, required in detached mode)
         :param errors: incidental errors
         """
-        # obtain the PKCS#7 file data
+        # initialize the structure holding the crypto data
+        self.signatures: list[CryptoPkcs7.SignatureInfo] = []
+
+        # definal a local errors list
+        curr_errors: list[str] = []
+
+        # retrieve the PKCS#7 file data
         self.p7s_bytes: bytes = file_get_data(file_data=p7s_data)
 
-        # extract the certificate chain and serialize it in DER format
-        certs: list[x509.Certificate] = load_der_pkcs7_certificates(data=self.p7s_bytes)
-        self.cert_chain: list[bytes] = [cert.public_bytes(encoding=Encoding.DER)
-                                        for cert in certs]
-
-        #  extract the public key and serialize it in DER format
-        cert: x509.Certificate = certs[0]
-        # 'cert.public_key()' may return one of:
-        #   DSAPublicKey, RSAPublicKey, EllipticCurvePublicKey,
-        #   Ed25519PublicKey, Ed448PublicKey, X25519PublicKey, X448PublicKey
-        self.public_key: RSAPublicKey = cert.public_key()
-
-        # extract the needed structures
+        # extract the structures common to all signatures
         content_info: cms.ContentInfo = cms.ContentInfo.load(encoded_data=self.p7s_bytes)
         signed_data: cms.SignedData = content_info["content"]
-        signer_info: cms.SignerInfo = signed_data["signer_infos"][0]
 
-        # extract the needed components
-        self.hash_algorithm: HashAlgorithm = HashAlgorithm(signer_info["digest_algorithm"]["algorithm"].native)
-        self.signature: bytes = signer_info["signature"].native
-        self.signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
+        # traverse the list of signatures
+        signer_infos: list[cms.SignerInfo] = signed_data["signer_infos"]
+        for signer_info in signer_infos:
 
-        signed_attrs = signer_info["signed_attrs"]
-        for signed_attr in signed_attrs:
-            match signed_attr["type"].native:
-                case "message_digest":
-                    self.payload_hash: bytes = signed_attr["values"][0].native
-                case "signing_time":
-                    self.signature_timestamp: datetime = signed_attr["values"][0].native
+            # extract the signature and its algorithms
+            signature: bytes = signer_info["signature"].native
+            signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
+            alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
+            hash_algorithm: HashAlgorithm = HashAlgorithm(alg_name)
+            chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
 
-        if doc_data:
-            # payload is detached, load it and validate its hash
-            self.payload: bytes = file_get_data(file_data=doc_data)
-            effective_hash: bytes = crypto_hash(msg=self.payload,
-                                                alg=self.hash_algorithm)
-            if effective_hash != self.payload_hash:
-                msg: str = "Invalid hash value in 'p7s_data'"
-                if CryptoPkcs7.logger:
-                    CryptoPkcs7.logger.error(msg=msg)
-                if isinstance(errors, list):
-                    errors.append(msg)
-        else:
-            # payload is attached, extract it
-            self.payload: bytes = signed_data["encap_content_info"]["content"].native
+            payload: bytes | None = None
+            payload_hash: bytes | None = None
+            signature_timestamp: datetime | None = None
+            signed_attrs: cms.CMSAttributes = signer_info["signed_attrs"]
+            if signed_attrs:
+                # the payload for signature verification is the DER encoding of signed_attrs
+                # (chief among those is the message digest)
+                payload = signed_attrs.dump()
+                for signed_attr in signed_attrs:
+                    match signed_attr["type"].native:
+                        case "message_digest":
+                            payload_hash: bytes = signed_attr["values"][0].native
+                        case "signing_time":
+                            signature_timestamp: datetime = signed_attr["values"][0].native
+            else:
+                encap_content = signed_data["encap_content_info"]["content"]
+                # if no signed_attrs, payload is the raw content
+                if encap_content:
+                    payload = encap_content.native
+                elif doc_data:
+                    # detached mode
+                    payload = file_get_data(file_data=doc_data)
 
-        # validate the signature
-        sig_hasher: CryptographyHashes = _cryptography_hash(hash_alg=self.hash_algorithm,
-                                                            errors=errors)
-        try:
-            self.public_key.verify(signature=self.signature,
-                                   data=self.payload_hash,
-                                   padding=padding.PKCS1v15(),
-                                   algorithm=sig_hasher)
-        except Exception as e:
-            msg = exc_format(exc=e,
-                             exc_info=sys.exc_info())
+            # obtain/validate the hash
+            if payload:
+                from .crypto_pomes import crypto_hash
+                effective_hash: bytes = crypto_hash(msg=payload,
+                                                    alg=hash_algorithm)
+                if not payload_hash:
+                    payload_hash = effective_hash
+                elif payload_hash != effective_hash:
+                    msg: str = f"Invalid digest for signature timestamp '{signature_timestamp}'"
+                    if CryptoPkcs7.logger:
+                        CryptoPkcs7.logger.error(msg=msg)
+                    curr_errors.append(msg)
+                    break
+
+            # build the certificate chain
+            cert_chain: list[bytes] = []
+            certs: cms.CertificateSet = signed_data["certificates"]
+            for cert in certs:
+                der_bytes: bytes = cert.dump()
+                cert_chain.append(der_bytes)
+
+            # extract certificates and public key
+            signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_chain[0],
+                                                                           backend=default_backend())
+            public_key: ChpPublicKey = signer_cert.public_key()
+            serial_number: int = signer_cert.serial_number
+            cert_fingerprint: str = signer_cert.fingerprint(chp_hash).hex()
+
+            # identify signer and issuer
+            subject: x509.name.Name = signer_cert.subject
+            signer_common_name: str = subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
+            cert_issuer: x509.name.Name = signer_cert.issuer
+            issuer_name: str = cert_issuer.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
+
+            # TSA timestamp info (optional)
+            tsa_timestamp: datetime | None = None
+            tsa_policy: str | None = None
+            tsa_serial_number: str | None = None
+            tsa_fingerprint: str | None = None
+
+            unsigned_attrs: cms.CMSAttributes = signer_info["unsigned_attrs"]
+            for unsigned_attr in unsigned_attrs:
+                attr_type: str = unsigned_attr["type"].native
+                if attr_type == "signature_time_stamp_token":
+                    try:
+                        # the timestamp token is a CMS SignedData structure -'dump()' gets the raw DER bytes
+                        values: cms.SetOfContentInfo = unsigned_attr["values"]
+                        timestamp_token: cms.ContentInfo = cms.ContentInfo.load(values[0].dump())
+
+                        # extract the TSTInfo structure
+                        tst_signed_data: cms.SignedData = timestamp_token["content"]
+                        tst_info: tsp.TSTInfo = tst_signed_data["encap_content_info"]["content"].parsed
+
+                        # extract TSA timestamp details
+                        tsa_timestamp = tst_info["gen_time"].native
+                        tsa_policy = tst_info["policy"].native
+                        tsa_serial_number = hex(tst_info["serial_number"].native)
+
+                        # calculate the TSA certificate fingerprint
+                        tsa_cert = signed_data["certificates"][0]
+                        tsa_cert_bytes = tsa_cert.dump()
+                        tsa_cert_obj = x509.load_der_x509_certificate(data=tsa_cert_bytes,
+                                                                      backend=default_backend())
+                        tsa_fingerprint: str = tsa_cert_obj.fingerprint(chp_hash).hex()
+                    except Exception as e:
+                        # unable to obtain TAS data: error parsing token
+                        if CryptoPkcs7.logger:
+                            msg: str = exc_format(exc=e,
+                                                  exc_info=sys.exc_info())
+                            CryptoPkcs7.logger.error(msg=msg)
+                    break
+
+            if payload_hash:
+                # verify the signature
+                try:
+                    if isinstance(public_key, RSAPublicKey):
+                        # determine the signature padding used
+                        if "pss" in signature_algorithm:
+                            signature_padding: padding.AsymmetricPadding = padding.PSS(
+                                mgf=padding.MGF1(algorithm=chp_hash),
+                                salt_length=padding.PSS.MAX_LENGTH
+                            )
+                        else:
+                            signature_padding: padding.AsymmetricPadding = padding.PKCS1v15()
+                        public_key.verify(signature=signature,
+                                          data=payload_hash,
+                                          padding=signature_padding,
+                                          algorithm=Prehashed(chp_hash))
+                    else:
+                        public_key.verify(signature=signature,
+                                          data=payload_hash,
+                                          algorithm=Prehashed(chp_hash))
+                except Exception as e:
+                    if CryptoPkcs7.logger:
+                        msg: str = exc_format(exc=e,
+                                              exc_info=sys.exc_info()) + f" signed by {signer_common_name}"
+                        CryptoPkcs7.logger.warning(msg=msg)
+
+            # build the signature's crypto data and save it
+            sig_info: CryptoPkcs7.SignatureInfo = CryptoPkcs7.SignatureInfo(
+                payload=payload,
+                payload_hash=payload_hash,
+                hash_algorithm=hash_algorithm,
+                signature=signature,
+                signature_algorithm=signature_algorithm,
+                signature_timestamp=signature_timestamp,
+                public_key=public_key,
+                cert_chain=cert_chain,
+                signer_cert=signer_cert,
+                cert_serial_number=serial_number,
+                signer_common_name=signer_common_name,
+                cert_issuer_name=issuer_name,
+                cert_fingerprint=cert_fingerprint,
+                tsa_timestamp=tsa_timestamp,
+                tsa_policy=tsa_policy,
+                tsa_serial_number=tsa_serial_number,
+                tsa_fingerprint=tsa_fingerprint
+            )
+            self.signatures.append(sig_info)
+
+        if not curr_errors and not self.signatures:
+            msg: str = "No digital signatures found in PDF file"
             if CryptoPkcs7.logger:
                 CryptoPkcs7.logger.error(msg=msg)
-            if isinstance(errors, list):
-                errors.append(msg)
+            curr_errors.append(msg)
+
+        if curr_errors and isinstance(errors, list):
+            errors.extend(curr_errors)
 
     def get_digest(self,
-                   fmt: Literal["base64", "bytes"]) -> str | bytes:
+                   fmt: Literal["base64", "bytes"],
+                   sig_seq: int = 0) -> str | bytes:
         """
-        Retrieve the digest, as specified in *fmt*.
+        Retrieve the digest associated with a reference signature, as specified in *sig_seq* and *fmt*.
+
+        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
+        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
+        signature in the signatures list, to yield the ordinal position of the reference signature.
+        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
+        the range of available signatures, the latest signature is selected.
 
         :param fmt: the format to use
+        :param sig_seq: the relative ordinal position of the reference signature
         :return: the digest, as per *fmt* (Base64-encoded or raw bytes)
         """
-        return self.payload_hash \
-            if fmt == "bytes" else base64.b64encode(s=self.payload_hash).decode(encoding="utf-8")
+        sig_info: CryptoPkcs7.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
+        return sig_info.payload_hash \
+            if fmt == "bytes" else base64.b64encode(s=sig_info.payload_hash).decode(encoding="utf-8")
 
     def get_signature(self,
-                      fmt: Literal["base64", "bytes"]) -> str | bytes:
+                      fmt: Literal["base64", "bytes"],
+                      sig_seq: int = 0) -> str | bytes:
         """
-        Retrieve the signature, as specified in *fmt*.
+        Retrieve the signature associated with a reference signature, as specified in *sig_seq* and *fmt*.
+
+        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
+        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
+        signature in the signatures list, to yield the ordinal position of the reference signature.
+        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
+        the range of available signatures, the latest signature is selected.
 
         :param fmt: the format to use
+        :param sig_seq: the relative ordinal position of the reference signature
         :return: the signature, as per *fmt* (Base64-encoded or raw bytes)
         """
-        return self.signature \
-            if fmt == "bytes" else base64.b64encode(s=self.signature).decode(encoding="utf-8")
+        sig_info: CryptoPkcs7.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
+        return sig_info.signature \
+            if fmt == "bytes" else base64.b64encode(s=sig_info.signature).decode(encoding="utf-8")
 
     def get_public_key(self,
-                       fmt: Literal["base64", "der", "pem"]) -> str | bytes:
+                       fmt: Literal["base64", "der", "pem"],
+                       sig_seq: int = 0) -> str | bytes:
         """
-        Retrieve the public key, as specified in *fmt*.
+        Retrieve the public key associated with a reference signature, as specified in *sig_seq* and *fmt*.
+
+        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
+        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
+        signature in the signatures list, to yield the ordinal position of the reference signature.
+        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
+        the range of available signatures, the latest signature is selected.
 
         These are the supported formats:
             - *der*: the raw binary representation of the key
@@ -161,27 +325,51 @@ class CryptoPkcs7:
             - *base64*: the Base64-encoded DER bytes
 
         :param fmt: the format to use
+        :param sig_seq: the relative ordinal position of the reference signature
         :return: the public key, as per *fmt* (*str* or *bytes*)
         """
         # declare the return variable
         result: str | bytes
 
+        sig_info: CryptoPkcs7.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
         if fmt == "pem":
-            result = self.public_key.public_bytes(encoding=Encoding.PEM,
-                                                  format=PublicFormat.SubjectPublicKeyInfo)
+            result = sig_info.public_key.public_bytes(encoding=Encoding.PEM,
+                                                      format=PublicFormat.SubjectPublicKeyInfo)
             result = result.decode(encoding="utf-8")
         else:
-            result = self.public_key.public_bytes(encoding=Encoding.DER,
-                                                  format=PublicFormat.SubjectPublicKeyInfo)
+            result = sig_info.public_key.public_bytes(encoding=Encoding.DER,
+                                                      format=PublicFormat.SubjectPublicKeyInfo)
             if fmt == "base64":
                 result = base64.b64encode(s=result).decode(encoding="utf-8")
 
         return result
 
+    def __get_sig_info(self,
+                       sig_seq: int) -> CryptoPkcs7.SignatureInfo:
+        """
+        Retrieve the signature metadata of a reference signature, as specified in *sig_seq*.
+
+        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
+        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
+        signature in the signatures list, to yield the ordinal position of the reference signature.
+        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
+        the range of available signatures, the latest signature is selected.
+
+        :param sig_seq: the relative ordinal position of the reference signature
+        :return: the reference signature's metadata
+
+        """
+        sig_ordinal: int = len(self.signatures) - 1
+        if sig_seq <= sig_ordinal:
+            sig_ordinal -= sig_seq
+
+        return self.signatures[sig_ordinal]
+
     @staticmethod
     def create(doc_data: Path | str | bytes,
                p12_data: Path | str | bytes,
                cert_pwd: str | bytes,
+               p7s_out: Path | str = None,
                hash_alg: HashAlgorithm = CRYPTO_DEFAULT_HASH_ALGORITHM,
                sig_mode: SignatureMode = SignatureMode.DETACHED,
                errors: list[str] = None) -> CryptoPkcs7:
@@ -200,6 +388,7 @@ class CryptoPkcs7:
         :param doc_data: the document to sign
         :param p12_data: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
         :param cert_pwd: password for the *.pfx* data
+        :param p7s_out: path to the output PKCS#7 file (optional, no output if not provided)
         :param hash_alg: the algorithm for hashing
         :param sig_mode: whether to handle the payload as "attached"(defaults to "detached")
         :param errors: incidental errors (may be non-empty)
@@ -223,8 +412,8 @@ class CryptoPkcs7:
         err_msg: str | None = None
         if cert_main and private_key:
             # prepare the PKCS#7 builder
-            sig_hasher: CryptographyHashes = _cryptography_hash(hash_alg=hash_alg,
-                                                                errors=errors)
+            sig_hasher: ChpHash = _chp_hash(alg=hash_alg,
+                                            errors=errors)
             if sig_hasher:
                 builder: PKCS7SignatureBuilder = PKCS7SignatureBuilder()
                 builder = builder.set_data(data=doc_bytes)
@@ -250,6 +439,14 @@ class CryptoPkcs7:
                                          doc_data=doc_bytes)
                 else:
                     result = CryptoPkcs7(p7s_data=pkcs7_data)
+
+                # output the PKCS#7 file
+                if p7s_out:
+                    # make sure 'p7s_out' is a 'Path'
+                    p7s_out = Path(p7s_out)
+                    # write the PKCS#7 data to a file
+                    with p7s_out.open("wb") as out_f:
+                        out_f.write(pkcs7_data)
         elif cert_main:
             err_msg = "Failed to load the private key"
         else:

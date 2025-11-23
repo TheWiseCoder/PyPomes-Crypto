@@ -1,11 +1,9 @@
 from __future__ import annotations
 import base64
-import json
 import sys
 from asn1crypto import cms, tsp
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
@@ -24,9 +22,9 @@ from PyPDF2 import PdfReader
 from PyPDF2.generic import ArrayObject, ByteStringObject, DictionaryObject, Field
 from pypomes_core import TZ_LOCAL, file_get_data, exc_format
 from requests.auth import HTTPBasicAuth
-from typing import Literal
+from typing import Any, Literal
 
-from .crypto_common import HashAlgorithm, CryptographyHashes, _cryptography_hash
+from .crypto_common import HashAlgorithm, ChpHash, ChpPublicKey, _chp_hash
 
 
 class CryptoPdf:
@@ -36,6 +34,7 @@ class CryptoPdf:
     This is the only instance variable, used to hold the crypto data of the document's signatures :
     - signatures: list of *SignatureInfo*
     """
+    # class-level logger
     logger: Logger | None = None
 
     @dataclass(frozen=True)
@@ -43,23 +42,25 @@ class CryptoPdf:
         """
         These are the attributes holding the signature data.
         """
-        payload: bytes
-        payload_hash: bytes
-        hash_algorithm: HashAlgorithm
-        signature: bytes
-        signature_algorithm: str
-        signature_timestamp: datetime
-        public_key: RSAPublicKey
-        cert_chain: list[bytes]
-        signer_cert: x509.Certificate
-        cert_serial_number: int
-        signer_common_name: str
-        issuer_name: str
-        cert_fingerprint_sha256: str
-        tsa_timestamp: datetime
-        tsa_policy: str
-        tsa_serial_number: str
-        tsa_fingerprint_sha256: str
+        payload_range: tuple[int, int, int, int]  # the range of bytes comprising the payload
+        payload_hash: bytes                       # the payload hash
+        hash_algorithm: HashAlgorithm             # the algorithm used to calculate the payload hash
+        signature: bytes                          # the digital signature
+        signature_algorithm: str                  # the algorithm used to generate the signature
+        signature_timestamp: datetime             # the signature's timestamp
+        public_key: ChpPublicKey                  # the public key (most likely, RSAPublicKey)
+        cert_chain: list[bytes]                   # the serialized X509 certificate chain (in DER format)
+        signer_cert: x509.Certificate             # the reference certificate (latest one in the chain)
+        cert_serial_number: int                   # the certificate's serial nmumber
+        signer_common_name: str                   # the name of the certificate's signer
+        cert_issuer_name: str                     # the name of the certificate's issuer
+        cert_fingerprint: str                     # the certificate's fingerprint
+
+        # TSA (Tme Stamping Authority) data
+        tsa_timestamp: datetime                   # the signature's timestamp
+        tsa_policy: str                           # the TSA's policy
+        tsa_serial_number: str                    # the timestamping's serial number
+        tsa_fingerprint: str                      # the timestamping's fingerprint
 
     def __init__(self,
                  pdf_data: Path | str | bytes,
@@ -84,12 +85,13 @@ class CryptoPdf:
         # initialize the structure holding the crypto data
         self.signatures: list[CryptoPdf.SignatureInfo] = []
 
-        # definal a local errors list
+        # retrieve the PDF data
+        self.pdf_bytes: bytes = file_get_data(file_data=pdf_data)
+
+        # define a local errors list
         curr_errors: list[str] = []
 
-        # retrieve the PDF data
-        pdf_bytes: bytes = file_get_data(file_data=pdf_data)
-        pdf_stream: BytesIO = BytesIO(initial_bytes=pdf_bytes)
+        pdf_stream: BytesIO = BytesIO(initial_bytes=self.pdf_bytes)
         pdf_stream.seek(0)
 
         # retrieve the signature fields
@@ -103,10 +105,11 @@ class CryptoPdf:
             sig_dict: DictionaryObject = sig_field.get("/V")
             contents: ByteStringObject = sig_dict.get("/Contents")
 
-            # extract payload
+            # extract the payload
             byte_range: ArrayObject = sig_dict.get("/ByteRange")
             from_1, len_1, from_2, len_2 = byte_range
-            payload: bytes = pdf_bytes[from_1:from_1+len_1] + pdf_bytes[from_2:from_2+len_2]
+            payload_range: tuple[int, int, int, int] = (int(from_1), int(len_1), int(from_2), int(len_2))
+            payload: bytes = self.pdf_bytes[from_1:from_1+len_1] + self.pdf_bytes[from_2:from_2+len_2]
 
             # extract signature data (CMS structure)
             sig_obj: ByteStringObject = contents.get_object()
@@ -114,11 +117,14 @@ class CryptoPdf:
             signed_data: cms.SignedData = cms_obj["content"]
             signer_info: cms.SignerInfo = signed_data["signer_infos"][0]
 
-            # extract the signature and its algorithm
+            # extract the signature and its algorithms
             signature: bytes = signer_info["signature"].native
             signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
+            alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
+            hash_algorithm: HashAlgorithm = HashAlgorithm(alg_name)
 
             # extract signature timestamp and payload hash
+            chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
             payload_hash: bytes | None = None
             signature_timestamp: datetime | None = None
             if "signed_attrs" in signer_info:
@@ -132,28 +138,16 @@ class CryptoPdf:
                             signature_timestamp = signed_attr["values"][0].native
             # validate hash
             from .crypto_pomes import crypto_hash
-            hash_algorithm: HashAlgorithm = HashAlgorithm(signed_data["digest_algorithms"][0]["algorithm"].native)
-            true_hash: bytes = crypto_hash(msg=payload,
-                                           alg=hash_algorithm)
+            effective_hash: bytes = crypto_hash(msg=payload,
+                                                alg=hash_algorithm)
             if not payload_hash:
-                payload_hash = true_hash
-            elif payload_hash != true_hash:
+                payload_hash = effective_hash
+            elif payload_hash != effective_hash:
                 msg: str = f"Invalid digest for signature timestamp '{signature_timestamp}'"
                 if CryptoPdf.logger:
                     CryptoPdf.logger.error(msg=msg)
                 curr_errors.append(msg)
                 break
-
-            # determine the signature padding used
-            cryptography_hash: CryptographyHashes = _cryptography_hash(hash_algorithm)
-            signature_padding: padding.AsymmetricPadding | None
-            if "rsa" not in signature_algorithm:
-                signature_padding = None
-            elif "pss" in signature_algorithm:
-                signature_padding = padding.PSS(mgf=padding.MGF1(cryptography_hash),
-                                                salt_length=padding.PSS.MAX_LENGTH)
-            else:
-                signature_padding = padding.PKCS1v15()
 
             # build the certificate chain
             cert_chain: list[bytes] = []
@@ -165,21 +159,21 @@ class CryptoPdf:
             # extract certificates and public key
             signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_chain[0],
                                                                            backend=default_backend())
-            public_key: RSAPublicKey = signer_cert.public_key()
+            public_key: ChpPublicKey = signer_cert.public_key()
             serial_number: int = signer_cert.serial_number
-            fingerprint_sha256: str = signer_cert.fingerprint(hashes.SHA256()).hex()
+            cert_fingerprint: str = signer_cert.fingerprint(chp_hash).hex()
 
             # identify signer and issuer
             subject: x509.name.Name = signer_cert.subject
             signer_common_name: str = subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
-            issuer: x509.name.Name = signer_cert.issuer
-            issuer_name: str = issuer.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
+            cert_issuer: x509.name.Name = signer_cert.issuer
+            issuer_name: str = cert_issuer.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
 
             # TSA timestamp info (optional)
             tsa_timestamp: datetime | None = None
             tsa_policy: str | None = None
             tsa_serial_number: str | None = None
-            tsa_fingerprint_sha256: str | None = None
+            tsa_fingerprint: str | None = None
 
             unsigned_attrs: cms.CMSAttributes = signer_info["unsigned_attrs"]
             for unsigned_attr in unsigned_attrs:
@@ -187,7 +181,8 @@ class CryptoPdf:
                 if attr_type == "signature_time_stamp_token":
                     try:
                         # the timestamp token is a CMS SignedData structure -'dump()' gets the raw DER bytes
-                        timestamp_token: cms.ContentInfo = cms.ContentInfo.load(unsigned_attr["values"][0].dump())
+                        values: cms.SetOfContentInfo = unsigned_attr["values"]
+                        timestamp_token: cms.ContentInfo = cms.ContentInfo.load(values[0].dump())
 
                         # extract the TSTInfo structure
                         tst_signed_data: cms.SignedData = timestamp_token["content"]
@@ -203,32 +198,43 @@ class CryptoPdf:
                         tsa_cert_bytes = tsa_cert.dump()
                         tsa_cert_obj = x509.load_der_x509_certificate(data=tsa_cert_bytes,
                                                                       backend=default_backend())
-                        tsa_fingerprint_sha256: str = tsa_cert_obj.fingerprint(hashes.SHA256()).hex()
+                        tsa_fingerprint: str = tsa_cert_obj.fingerprint(chp_hash).hex()
                     except Exception as e:
                         # unable to obtain TAS data: error parsing token
                         if CryptoPdf.logger:
-                            exc_err: str = exc_format(exc=e,
-                                                      exc_info=sys.exc_info())
-                            CryptoPdf.logger.error(msg=exc_err)
+                            msg: str = exc_format(exc=e,
+                                                  exc_info=sys.exc_info())
+                            CryptoPdf.logger.error(msg=msg)
                     break
 
             # verify the signature
             try:
-                public_key.verify(signature=signature,
-                                  data=payload_hash,
-                                  padding=signature_padding,
-                                  algorithm=Prehashed(cryptography_hash))
+                if isinstance(public_key, RSAPublicKey):
+                    # determine the signature padding used
+                    if "pss" in signature_algorithm:
+                        signature_padding: padding.AsymmetricPadding = padding.PSS(
+                            mgf=padding.MGF1(algorithm=chp_hash),
+                            salt_length=padding.PSS.MAX_LENGTH
+                        )
+                    else:
+                        signature_padding: padding.AsymmetricPadding = padding.PKCS1v15()
+                    public_key.verify(signature=signature,
+                                      data=payload_hash,
+                                      padding=signature_padding,
+                                      algorithm=Prehashed(chp_hash))
+                else:
+                    public_key.verify(signature=signature,
+                                      data=payload_hash,
+                                      algorithm=Prehashed(chp_hash))
             except Exception as e:
-                exc_err: str = exc_format(exc=e,
-                                          exc_info=sys.exc_info()) + f" signed by {signer_common_name}"
                 if CryptoPdf.logger:
-                    CryptoPdf.logger.error(msg=exc_err)
-                curr_errors.append(exc_err)
-                break
+                    msg: str = exc_format(exc=e,
+                                          exc_info=sys.exc_info()) + f" signed by {signer_common_name}"
+                    CryptoPdf.logger.warning(msg=msg)
 
             # build the signature's crypto data and save it
             sig_info: CryptoPdf.SignatureInfo = CryptoPdf.SignatureInfo(
-                payload=payload,
+                payload_range=payload_range,
                 payload_hash=payload_hash,
                 hash_algorithm=hash_algorithm,
                 signature=signature,
@@ -239,12 +245,12 @@ class CryptoPdf:
                 signer_cert=signer_cert,
                 cert_serial_number=serial_number,
                 signer_common_name=signer_common_name,
-                issuer_name=issuer_name,
-                cert_fingerprint_sha256=fingerprint_sha256,
+                cert_issuer_name=issuer_name,
+                cert_fingerprint=cert_fingerprint,
                 tsa_timestamp=tsa_timestamp,
                 tsa_policy=tsa_policy,
                 tsa_serial_number=tsa_serial_number,
-                tsa_fingerprint_sha256=tsa_fingerprint_sha256
+                tsa_fingerprint=tsa_fingerprint
             )
             self.signatures.append(sig_info)
 
@@ -263,17 +269,17 @@ class CryptoPdf:
         """
         Retrieve the digest associated with a reference signature, as specified in *sig_seq* and *fmt*.
 
-        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is *last-to-first*.
-        The value of *sig_seq* is subtracted from the ordinal position of the last signature in the signatures list,
-        to yield the ordinal position of the reference signature. It defaults to *0*, indicating the latest signature.
-        If the operation yields a number out of the range of available signatures, the latest signature is selected.
+        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
+        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
+        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
+        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
+        of available signatures, the latest signature is selected.
 
         :param fmt: the format to use
         :param sig_seq: the relative ordinal position of the reference signature
         :return: the digest, as per *fmt* (Base64-encoded or raw bytes)
         """
-        sig_ordinal = max(0, len(self.signatures) - sig_seq - 1)
-        sig_info: CryptoPdf.SignatureInfo = self.signatures[sig_ordinal]
+        sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
         return sig_info.payload_hash \
             if fmt == "bytes" else base64.b64encode(s=sig_info.payload_hash).decode(encoding="utf-8")
 
@@ -283,17 +289,17 @@ class CryptoPdf:
         """
         Retrieve the signature associated with a reference signature, as specified in *sig_seq* and *fmt*.
 
-        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is *last-to-first*.
-        The value of *sig_seq* is subtracted from the ordinal position of the last signature in the signatures list,
-        to yield the ordinal position of the reference signature. It defaults to *0*, indicating the latest signature.
-        If the operation yields a number out of the range of available signatures, the latest signature is selected.
+        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
+        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
+        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
+        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
+        of available signatures, the latest signature is selected.
 
         :param fmt: the format to use
         :param sig_seq: the relative ordinal position of the reference signature
         :return: the signature, as per *fmt* (Base64-encoded or raw bytes)
         """
-        sig_ordinal = max(0, len(self.signatures) - sig_seq - 1)
-        sig_info: CryptoPdf.SignatureInfo = self.signatures[sig_ordinal]
+        sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
         return sig_info.signature \
             if fmt == "bytes" else base64.b64encode(s=sig_info.signature).decode(encoding="utf-8")
 
@@ -303,10 +309,11 @@ class CryptoPdf:
         """
         Retrieve the public key associated with a reference signature, as specified in *sig_seq* and *fmt*.
 
-        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is *last-to-first*.
-        The value of *sig_seq* is subtracted from the ordinal position of the last signature in the signatures list,
-        to yield the ordinal position of the reference signature. It defaults to *0*, indicating the latest signature.
-        If the operation yields a number out of the range of available signatures, the latest signature is selected.
+        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
+        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
+        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
+        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
+        of available signatures, the latest signature is selected.
 
         These are the supported formats:
             - *der*: the raw binary representation of the key
@@ -320,9 +327,7 @@ class CryptoPdf:
         # declare the return variable
         result: str | bytes
 
-        sig_ordinal = max(0, len(self.signatures) - sig_seq - 1)
-        sig_info: CryptoPdf.SignatureInfo = self.signatures[sig_ordinal]
-
+        sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
         if fmt == "pem":
             result = sig_info.public_key.public_bytes(encoding=Encoding.PEM,
                                                       format=PublicFormat.SubjectPublicKeyInfo)
@@ -335,53 +340,82 @@ class CryptoPdf:
 
         return result
 
-    def export_metadata(self) -> str:
+    def get_metadata(self,
+                     sig_seq: int = 0) -> dict[str, Any]:
         """
-        Export the certificate chain metadata as a JSON-encoded, formatted, string.
+        Retrieve the certificate chain metadata associated with a reference signature, as specified in *sig_seq*.
 
-        :return: the certificate chain metadata as a JSON-encoded, formatted, string
+        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
+        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
+        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
+        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
+        of available signatures, the latest signature is selected.
+
+        :param sig_seq: the relative ordinal position of the reference signature
+        :return: the certificate chain metadata associated with the reference signature
         """
-        export_list = []
-        for idx, sig in enumerate(iterable=self.signatures):
-            cert = sig.signer_cert
+        # initialize the return variable
+        result: dict[str, Any]
 
-            # compute fingerprints for the entire chain
-            chain_fingerprints = []
-            for cert_bytes in sig.cert_chain:
-                chain_cert = x509.load_der_x509_certificate(cert_bytes, default_backend())
-                chain_fingerprints.append(chain_cert.fingerprint(hashes.SHA256()).hex())
+        sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
+        cert: x509.Certificate = sig_info.signer_cert
 
-            sig_metadata = {
-                "signature_index": idx,
-                "signer_common_name": sig.signer_common_name,
-                "issuer": sig.issuer_name,
-                "hash_algorithm": sig.hash_algorithm,
-                "signature_algorithm": sig.signature_algorithm,
-                "signature_timestamp": sig.signature_timestamp.isoformat()
-                if sig.signature_timestamp else None,
-                "cert_serial_number": hex(sig.cert_serial_number),
-                "cert_not_before": cert.not_valid_before.isoformat(),
-                "cert_not_after": cert.not_valid_after.isoformat(),
-                "cert_subject": cert.subject.rfc4514_string(),
-                "cert_issuer": cert.issuer.rfc4514_string(),
-                "cert_chain_length": len(sig.cert_chain),
-                "cert_fingerprint_sha256": sig.cert_fingerprint_sha256,
-                "cert_chain_fingerprints_sha256": chain_fingerprints
-            }
-            # add TSA details
-            if sig.tsa_fingerprint_sha256:
-                sig_metadata.update({
-                    "tsa_timestamp": sig.tsa_timestamp.isoformat()
-                    if sig.tsa_timestamp else None,
-                    "tsa_policy": sig.tsa_policy,
-                    "tsa_serial_number": sig.tsa_serial_number,
-                    "tsa_fingerprint_sha256": sig.tsa_fingerprint_sha256
-                })
+        # compute fingerprints for the entire certificate chain
+        chain_fingerprints: list[str] = []
+        for cert_bytes in sig_info.cert_chain:
+            chain_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_bytes,
+                                                                          backend=default_backend())
+            chp_hash: ChpHash = _chp_hash(alg=sig_info.hash_algorithm)
+            chain_fingerprints.append(chain_cert.fingerprint(chp_hash).hex())
 
-            export_list.append(sig_metadata)
+        result: dict[str, Any] = {
+            "signer_common_name": sig_info.signer_common_name,
+            "issuer": sig_info.cert_issuer_name,
+            "hash_algorithm": sig_info.hash_algorithm,
+            "signature_algorithm": sig_info.signature_algorithm,
+            "signature_timestamp": sig_info.signature_timestamp.isoformat()
+            if sig_info.signature_timestamp else None,
+            "cert_serial_number": hex(sig_info.cert_serial_number),
+            "cert_not_before": cert.not_valid_before.isoformat(),
+            "cert_not_after": cert.not_valid_after.isoformat(),
+            "cert_subject": cert.subject.rfc4514_string(),
+            "cert_issuer": cert.issuer.rfc4514_string(),
+            "cert_fingerprint": sig_info.cert_fingerprint,
+            "cert_chain_length": len(sig_info.cert_chain),
+            "cert_chain_fingerprints": chain_fingerprints
+        }
+        # add the TSA details
+        if sig_info.tsa_fingerprint:
+            result.update({
+                "tsa_timestamp": sig_info.tsa_timestamp.isoformat()
+                if sig_info.tsa_timestamp else None,
+                "tsa_policy": sig_info.tsa_policy,
+                "tsa_serial_number": sig_info.tsa_serial_number,
+                "tsa_fingerprint": sig_info.tsa_fingerprint
+            })
 
-        return json.dumps(obj=export_list,
-                          indent=2)
+        return result
+
+    def __get_sig_info(self,
+                       sig_seq: int) -> CryptoPdf.SignatureInfo:
+        """
+        Retrieve the signature metadata of a reference signature, as specified in *sig_seq*.
+
+        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
+        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
+        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
+        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
+        of available signatures, the latest signature is selected.
+
+        :param sig_seq: the relative ordinal position of the reference signature
+        :return: the reference signature's metadata
+
+        """
+        sig_ordinal: int = len(self.signatures) - 1
+        if sig_seq <= sig_ordinal:
+            sig_ordinal -= sig_seq
+
+        return self.signatures[sig_ordinal]
 
     @staticmethod
     def set_logger(logger: Logger) -> None:
@@ -413,7 +447,7 @@ class CryptoPdf:
         :param pdf_in: path to the input PDF file
         :param pfx_file: path to the PKCS#12 (.pfx/.p12) certificate file
         :param pfx_password: password for the certificate
-        :param pdf_out: path to the output signed PDF file (optinal, no output if not provided)
+        :param pdf_out: path to the output signed PDF file (optional, no output if not provided)
         :param make_visible: whether to include a visible signature appearance
         :param page_num: page number for the visible signature (0-based)
         :param box: (x1, y1, x2, y2) coordinates for the signature box
@@ -477,7 +511,7 @@ class CryptoPdf:
             # make sure 'pdf_out' is a 'Path'
             pdf_out = Path(pdf_out)
             # write the signed PDF to a file
-            with pdf_out.open("wb") as out_f:
+            with pdf_out.open("wt") as out_f:
                 out_f.write(signed_pdf)
 
         return CryptoPdf(pdf_data=signed_pdf)
