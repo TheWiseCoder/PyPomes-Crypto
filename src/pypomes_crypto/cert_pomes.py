@@ -12,19 +12,25 @@ from datetime import datetime, UTC
 from logging import Logger
 from pathlib import Path
 from pypomes_core import exc_format
-from typing import Any
+from typing import Any, Literal
 
 from .crypto_common import ChpPublicKey
 
 
-def cert_load_trusted() -> list[x509.Certificate]:
+def cert_get_trusted(fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x509.Certificate]:
     """
     Retrieve the certificates in the trusted store of the host OS.
 
-    :return: the list of certificates in the trtusted store of the host OS
+    The return format of the individual certificates must be specified in *fmt*:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
+        - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
+
+    :param fmt: the format to use for the individual certificates
+    :return: the list of certificates in the trusted store of the host OS
     """
     # initialize the return variable
-    result: list[x509.Certificate] = []
+    result: list[str | bytes | x509.Certificate] = []
 
     # read the trusted store
     ca_path: Path = Path(certifi.where())
@@ -32,11 +38,18 @@ def cert_load_trusted() -> list[x509.Certificate]:
         pem_data: bytes = f.read()
 
     # iterate on the certificates
-    for cert in pem_data.split(b"-----END CERTIFICATE-----"):
-        if b"-----BEGIN CERTIFICATE-----" in cert:
-            cert += b"-----END CERTIFICATE-----"
-            result.append(x509.load_pem_x509_certificate(data=cert))
-
+    certs_pem: list[bytes] = pem_data.split(b"-----END CERTIFICATE-----")
+    for cert_pem in certs_pem:
+        if b"-----BEGIN CERTIFICATE-----" in cert_pem:
+            cert_pem += b"-----END CERTIFICATE-----"
+            if fmt == "pem":
+                result.append(cert_pem.decode(encoding="utf-8"))
+            else:
+                cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem)
+                if cert_pem == "der":
+                    result.append(cert_x509.public_bytes(encoding=Encoding.DER))
+                else:
+                    result.append(cert_x509)
     return result
 
 
