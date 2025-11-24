@@ -20,7 +20,6 @@ from pathlib import Path
 from pypomes_core import file_get_data, exc_format
 from typing import Any, Literal
 
-from . import cert_load_trusted
 from .crypto_common import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
     SignatureMode, HashAlgorithm,
@@ -45,24 +44,23 @@ class CryptoPkcs7:
         """
         These are the attributes holding the signature data.
         """
-        payload_hash: bytes            # the payload hash
-        hash_algorithm: HashAlgorithm  # the algorithm used to calculate the payload hash
-        signature: bytes               # the digital signature
-        signature_algorithm: str       # the algorithm used to generate the signature
-        signature_timestamp: datetime  # the signature's timestamp
-        public_key: ChpPublicKey       # the public key (most likely, RSAPublicKey)
-        cert_chain: list[bytes]        # the serialized X509 certificate chain (in DER format)
-        signer_cert: x509.Certificate  # the reference certificate (latest one in the certificate chain)
-        cert_serial_number: int        # the certificate's serial nmumber
-        signer_common_name: str        # the name of the certificate's signer
-        cert_issuer_name: str          # the name of the certificate's issuer
-        cert_fingerprint: str          # the certificate's fingerprint
+        payload_hash: bytes                 # the payload hash
+        hash_algorithm: HashAlgorithm       # the algorithm used to calculate the payload hash
+        signature: bytes                    # the digital signature
+        signature_algorithm: str            # the algorithm used to generate the signature
+        signature_timestamp: datetime       # the signature's timestamp
+        public_key: ChpPublicKey            # the public key (most likely, RSAPublicKey)
+        signer_common_name: str             # the name of the certificate's signer
+        signer_cert: x509.Certificate       # the reference certificate (latest one in the certificate chain)
+        cert_serial_number: int             # the certificate's serial nmumber
+        cert_fingerprint: str               # the certificate's fingerprint
+        cert_chain: list[bytes]             # the serialized X509 certificate chain (in DER format)
 
         # TSA (Tme Stamping Authority) data
-        tsa_timestamp: datetime        # the signature's timestamp
-        tsa_policy: str                # the TSA's policy
-        tsa_serial_number: str         # the timestamping's serial number
-        tsa_fingerprint: str           # the timestamping's fingerprint
+        tsa_timestamp: datetime             # the signature's timestamp
+        tsa_policy: str                     # the TSA's policy
+        tsa_serial_number: str              # the timestamping's serial number
+        tsa_fingerprint: str                # the timestamping's fingerprint
 
     def __init__(self,
                  p7s_data: Path | str | bytes,
@@ -158,11 +156,9 @@ class CryptoPkcs7:
                 cert_serial_number: int = signer_cert.serial_number
                 cert_fingerprint: str = signer_cert.fingerprint(chp_hash).hex()
 
-                # identify signer and issuer
+                # identify signer
                 subject: x509.name.Name = signer_cert.subject
                 signer_common_name: str = subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
-                cert_issuer: x509.name.Name = signer_cert.issuer
-                issuer_name: str = cert_issuer.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
 
                 # TSA timestamp info (optional)
                 tsa_timestamp: datetime | None = None
@@ -236,12 +232,11 @@ class CryptoPkcs7:
                     signature_algorithm=signature_algorithm,
                     signature_timestamp=signature_timestamp,
                     public_key=public_key,
-                    cert_chain=cert_chain,
+                    signer_common_name=signer_common_name,
                     signer_cert=signer_cert,
                     cert_serial_number=cert_serial_number,
-                    signer_common_name=signer_common_name,
-                    cert_issuer_name=issuer_name,
                     cert_fingerprint=cert_fingerprint,
+                    cert_chain=cert_chain,
                     tsa_timestamp=tsa_timestamp,
                     tsa_policy=tsa_policy,
                     tsa_serial_number=tsa_serial_number,
@@ -386,27 +381,26 @@ class CryptoPkcs7:
             chain_fingerprints.append(chain_cert.fingerprint(chp_hash).hex())
 
         result: dict[str, Any] = {
-            "signer_common_name": sig_info.signer_common_name,
-            "issuer": sig_info.cert_issuer_name,
-            "hash_algorithm": sig_info.hash_algorithm,
-            "signature_algorithm": sig_info.signature_algorithm,
-            "signature_timestamp": sig_info.signature_timestamp,
-            "cert_serial_number": sig_info.cert_serial_number,
-            "cert_not_before": cert.not_valid_before,
-            "cert_not_after": cert.not_valid_after,
-            "cert_subject": cert.subject.rfc4514_string(),
-            "cert_issuer": cert.issuer.rfc4514_string(),
-            "cert_fingerprint": sig_info.cert_fingerprint,
-            "cert_chain_length": len(sig_info.cert_chain),
-            "cert_chain_fingerprints": chain_fingerprints
+            "signer-common-name": sig_info.signer_common_name,
+            "hash-algorithm": sig_info.hash_algorithm,
+            "signature-algorithm": sig_info.signature_algorithm,
+            "signature-timestamp": sig_info.signature_timestamp,
+            "cert-serial-number": sig_info.cert_serial_number,
+            "cert-not-before": cert.not_valid_before,
+            "cert-not-after": cert.not_valid_after,
+            "cert-subject": cert.subject.rfc4514_string(),
+            "cert-issuer": cert.issuer.rfc4514_string(),
+            "cert-fingerprint": sig_info.cert_fingerprint,
+            "cert-chain-length": len(sig_info.cert_chain),
+            "cert-chain-fingerprints": chain_fingerprints
         }
         # add the TSA details
         if sig_info.tsa_fingerprint:
             result.update({
-                "tsa_timestamp": sig_info.tsa_timestamp,
-                "tsa_policy": sig_info.tsa_policy,
-                "tsa_serial_number": sig_info.tsa_serial_number,
-                "tsa_fingerprint": sig_info.tsa_fingerprint
+                "tsa-timestamp": sig_info.tsa_timestamp,
+                "tsa-policy": sig_info.tsa_policy,
+                "tsa-serial_number": sig_info.tsa_serial_number,
+                "tsa-fingerprint": sig_info.tsa_fingerprint
             })
 
         return result
