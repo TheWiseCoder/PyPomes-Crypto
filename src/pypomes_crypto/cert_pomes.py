@@ -79,7 +79,7 @@ def cert_verify_chain(cert_chain: list[x509.Certificate],
         # verify signatures
         for i in range(len(cert_chain) - 1):
             cert_verify_signature(cert=cert_chain[i],
-                                  issuer_cert=cert_chain[i + 1],
+                                  issuer=cert_chain[i + 1],
                                   errors=curr_errors,
                                   logger=logger)
             if curr_errors:
@@ -96,7 +96,7 @@ def cert_verify_chain(cert_chain: list[x509.Certificate],
             for idx, cert in enumerate(cert_chain[:-1]):  # leaf and intermediates
                 issuer = cert_chain[idx + 1]
                 if not cert_verify_revocation(cert=cert,
-                                              issuer_cert=issuer,
+                                              issuer=issuer,
                                               logger=logger):
                     curr_errors.append(f"Certificate '{cert.subject}' has been revoked")
                     break
@@ -112,14 +112,14 @@ def cert_verify_chain(cert_chain: list[x509.Certificate],
 
 
 def cert_verify_signature(cert: x509.Certificate,
-                          issuer_cert: x509.Certificate,
+                          issuer: x509.Certificate,
                           errors: list[str] = None,
                           logger: Logger = None) -> bool:
     """
     Verify whether *cert*'s signature is valid.
 
     :param cert: the reference certificate
-    :param issuer_cert: the certificater issuer
+    :param issuer: the certificater issuer
     :param errors: incidental errors (may be non-empty)
     :param logger: optional logger
     :return: *True* if the signature is valid, *False* otherwise
@@ -128,7 +128,7 @@ def cert_verify_signature(cert: x509.Certificate,
     result: bool = False
 
     # retrieve the certificate's public key
-    public_key: ChpPublicKey = issuer_cert.public_key()
+    public_key: ChpPublicKey = issuer.public_key()
 
     # verify the signature
     try:
@@ -164,17 +164,17 @@ def cert_verify_signature(cert: x509.Certificate,
 
 
 def cert_verify_revocation(cert: x509.Certificate,
-                           issuer_cert: x509.Certificate,
+                           issuer: x509.Certificate,
                            logger: Logger = None) -> bool:
     """
-    Verify whether *cert* is good standing, that is, it has not been revoked.
+    Verify whether *cert* is in good standing, that is, it has not been revoked.
 
     Two attempts are carried out to make sure ther certificate is still in good standing:
         - the appropriate *Certificate Revocation Lists* (CRLs) are inspected
         - the newer *Online Certificate Status Protocol* (OCSP) protocol is used
 
     :param cert: the reference certificate
-    :param issuer_cert: the certificater issuer
+    :param issuer: the certificater issuer
     :param logger: optional logger
     :return: *True* if the certificate is in good standing, *False* otherwise
     """
@@ -227,7 +227,7 @@ def cert_verify_revocation(cert: x509.Certificate,
             builder: OCSPRequestBuilder = OCSPRequestBuilder()
             # ruff: noqa: S303
             builder = builder.add_certificate(cert=cert,
-                                              issuer=issuer_cert,
+                                              issuer=issuer,
                                               algorithm=hashes.SHA1())
             ocsp_request: x509.ocsp.OCSPRequest = builder.build()
             headers = {"Content-Type": "application/ocsp-request",
