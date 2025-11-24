@@ -20,6 +20,7 @@ from pathlib import Path
 from pypomes_core import file_get_data, exc_format
 from typing import Any, Literal
 
+from . import cert_load_trusted
 from .crypto_common import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
     SignatureMode, HashAlgorithm,
@@ -154,7 +155,7 @@ class CryptoPkcs7:
                 signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_chain[0],
                                                                                backend=default_backend())
                 public_key: ChpPublicKey = signer_cert.public_key()
-                serial_number: int = signer_cert.serial_number
+                cert_serial_number: int = signer_cert.serial_number
                 cert_fingerprint: str = signer_cert.fingerprint(chp_hash).hex()
 
                 # identify signer and issuer
@@ -237,7 +238,7 @@ class CryptoPkcs7:
                     public_key=public_key,
                     cert_chain=cert_chain,
                     signer_cert=signer_cert,
-                    cert_serial_number=serial_number,
+                    cert_serial_number=cert_serial_number,
                     signer_common_name=signer_common_name,
                     cert_issuer_name=issuer_name,
                     cert_fingerprint=cert_fingerprint,
@@ -389,11 +390,10 @@ class CryptoPkcs7:
             "issuer": sig_info.cert_issuer_name,
             "hash_algorithm": sig_info.hash_algorithm,
             "signature_algorithm": sig_info.signature_algorithm,
-            "signature_timestamp": sig_info.signature_timestamp.isoformat()
-            if sig_info.signature_timestamp else None,
-            "cert_serial_number": hex(sig_info.cert_serial_number),
-            "cert_not_before": cert.not_valid_before.isoformat(),
-            "cert_not_after": cert.not_valid_after.isoformat(),
+            "signature_timestamp": sig_info.signature_timestamp,
+            "cert_serial_number": sig_info.cert_serial_number,
+            "cert_not_before": cert.not_valid_before,
+            "cert_not_after": cert.not_valid_after,
             "cert_subject": cert.subject.rfc4514_string(),
             "cert_issuer": cert.issuer.rfc4514_string(),
             "cert_fingerprint": sig_info.cert_fingerprint,
@@ -403,8 +403,7 @@ class CryptoPkcs7:
         # add the TSA details
         if sig_info.tsa_fingerprint:
             result.update({
-                "tsa_timestamp": sig_info.tsa_timestamp.isoformat()
-                if sig_info.tsa_timestamp else None,
+                "tsa_timestamp": sig_info.tsa_timestamp,
                 "tsa_policy": sig_info.tsa_policy,
                 "tsa_serial_number": sig_info.tsa_serial_number,
                 "tsa_fingerprint": sig_info.tsa_fingerprint
