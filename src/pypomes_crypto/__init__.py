@@ -1,4 +1,5 @@
 from .cert_pomes import (
+    cert_bundle_certs, cert_unbundle_certs,
     cert_get_trusted, cert_verify_chain,
     cert_verify_signature, cert_verify_revocation
 )
@@ -30,6 +31,7 @@ from .jwt_pomes import (
 
 __all__ = [
     # cert_pomes
+    "cert_bundle_certs", "cert_unbundle_certs",
     "cert_get_trusted", "cert_verify_chain",
     "cert_verify_signature", "cert_verify_revocation",
     # crypto_aes

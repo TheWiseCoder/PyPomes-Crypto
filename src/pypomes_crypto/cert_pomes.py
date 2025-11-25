@@ -1,8 +1,10 @@
 import sys
 import certifi
 import requests
+import struct
 from contextlib import suppress
 from cryptography import x509
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
@@ -15,6 +17,119 @@ from pypomes_core import exc_format
 from typing import Any, Literal
 
 from .crypto_common import ChpPublicKey
+
+
+def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
+                      fmt: Literal["der", "pem"]) -> str | bytes:
+    """
+    Bundle the certificates in *certs* into a single char string or byte string.
+
+    The format of the individual input certificates can be:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
+        - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
+
+    *PEM* is a text format with clear delimiters ('-----BEGIN CERTIFICATE-----' and '-----END CERTIFICATE-----'),
+    whereas *DER* is a binary format having no delimiters. When bundling multiple *DER* certificates into a
+    single byte string, a way to delimit them for later unbundling is therefore needed. The approach used
+    here is to prefix each certificate with its length in a fixed-size header.
+
+    The output format is given by *fmt*:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
+
+    :param certs: the certificates to bundle
+    :param fmt: the format to use for the individual certificates
+    :return: the bundle certificatrs as a char string or byte string
+    """
+    # initialize the return variable
+    result: str | bytes = "" if fmt == "pem" else b""
+
+    for cert in certs:
+        if isinstance(cert, x509.Certificate):
+            # 'cert' is a certificate object
+            if fmt == "pem":
+                result += cert.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8")
+            else:
+                cert_der = cert.public_bytes(encoding=Encoding.DER)
+                result += struct.pack(">I", len(cert_der)) + cert_der
+        elif isinstance(cert, str):
+            # 'cert' is PEM-encoded
+            if fmt == "pem":
+                result += cert
+            else:
+                result += cert.encode(encoding="utf-8")
+        # 'cert' is DER-encoded
+        elif fmt == "pem":
+            result += (struct.pack(">I", len(cert)) + cert).decode(encoding="utf-8")
+        else:
+            result += struct.pack(">I", len(cert)) + cert
+
+    return result
+
+
+def cert_unbundle_certs(certs: str | bytes,
+                        fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x509.Certificate]:
+    """
+    Unbundle the certificates in *certs* into a list of certificates.
+
+    The format of the individual input certificates in the bundle can be:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
+
+    *PEM* is a text format with clear delimiters ('-----BEGIN CERTIFICATE-----' and '-----END CERTIFICATE-----'),
+    whereas *DER* is a binary format having no delimiters. When bundling multiple *DER* certificates into a
+    single byte string, a way to delimit them for later unbundling is therefore needed. The approach used
+    here was to prefix each certificate with its length in a fixed-size header.
+
+    The return format of the individual certificates must be specified in *fmt*:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
+        - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
+
+    :param certs: the certificates to bundle
+    :param fmt: the format to use for the individual certificates
+    :return: the bundle certificatrs as a char string or byte string
+    """
+    # initialize the return variable
+    result: list[str | bytes | x509.Certificate] = []
+
+    # iterate on the certificates
+    if isinstance(certs, str):
+        # 'certs' is a PEM bundle
+        certs_pem: list[str] = certs.split("-----END CERTIFICATE-----")
+        for cert_pem in certs_pem:
+            if "-----BEGIN CERTIFICATE-----" in cert_pem:
+                cert_pem += "-----END CERTIFICATE-----"
+                if fmt == "pem":
+                    result.append(cert_pem)
+                else:
+                    cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem.encode("utf-8"))
+                    if cert_pem == "der":
+                        result.append(cert_x509.public_bytes(encoding=Encoding.DER))
+                    else:
+                        result.append(cert_x509)
+    else:
+        # 'certs' is a DER bundle
+        offset: int = 0
+        while offset < len(certs):
+            # obtain the certificate length as encoded in the 4-byte header
+            length: int = struct.unpack(">I", certs[offset:offset+4])[0]
+            offset += 4
+            # extract the certificate bytes
+            cert_der: bytes = certs[offset:offset+length]
+            offset += length
+            if fmt == "der":
+                result.append(cert_der)
+            else:
+                # load certificate
+                cert_x509: x509.Certificate = x509.load_der_x509_certificate(data=cert_der,
+                                                                             backend=default_backend())
+                if fmt == "pem":
+                    result.append(cert_x509.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8"))
+                else:
+                    result.append(cert_x509)
+    return result
 
 
 def cert_get_trusted(fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x509.Certificate]:

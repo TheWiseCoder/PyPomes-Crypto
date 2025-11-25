@@ -31,6 +31,9 @@ class CryptoPkcs7:
     """
     Python code to extract crypto data from a PKCS#7 signature file.
 
+    The crypto data is in *Cryptographic Message Syntax* (CMS), a standard for digitally signing, digesting,
+    authenticating, andr encrypting arbitrary message content.
+
     These are the instance attributes:
         - p7s_bytes: bytes                 - the PKCS#7-compliant file
         - payload: bytes                   - the common payload (embedded or external)
