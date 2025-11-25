@@ -38,12 +38,12 @@ class CryptoPdf:
     """
     Python code to extract crypto data from a *PAdES* compliant, digitally signed, PDF file.
 
-    The crypto data is mostly in *Cryptographic Message Syntax* (CMS, a standard for digitally signing,
+    The crypto data is mostly in *Cryptographic Message Syntax* (CMS), a standard for digitally signing,
     digesting, authenticating, and encrypting arbitrary message content. In the case of the *PAdES* standard,
     some deviations exist, due to the utilization of PDF dictionaries to hold some of the data.
 
     These are the instance variables:
-        - signatures: list of *SignatureInfo*,  holds the crypto data of the document's signatures
+        - signatures: list of *SignatureInfo*, holds the crypto data of the document's signatures
         - pdf_bytes: holds the full bytes content of the PDF file, on which the payload ranges are applied
     """
     # class-level logger
@@ -67,7 +67,7 @@ class CryptoPdf:
         cert_fingerprint: str                     # the certificate's fingerprint
         cert_chain: list[bytes]                   # the serialized X509 certificate chain (in DER format)
 
-        # TSA (Tme Stamping Authority) data
+        # TSA (Time Stamping Authority) data
         tsa_timestamp: datetime                   # the signature's timestamp
         tsa_policy: str                           # the TSA's policy
         tsa_serial_number: str                    # the timestamping's serial number

@@ -6,17 +6,110 @@ from contextlib import suppress
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.ocsp import OCSPRequestBuilder, load_der_ocsp_response
-from datetime import datetime, UTC
+from cryptography.x509.oid import NameOID
+from datetime import UTC, datetime, timedelta
 from logging import Logger
 from pathlib import Path
 from pypomes_core import exc_format
 from typing import Any, Literal
 
 from .crypto_common import ChpPublicKey
+
+
+def cert_generate(common_name: str,
+                  organization: str,
+                  locality: str,
+                  province: str,
+                  country: str,
+                  valid_from: datetime = None,
+                  valid_for: int = 365) -> tuple[x509.Certificate, RSAPrivateKey]:
+    """
+    Generate a self-signed x509 digital certificate/private key set.
+
+    :param common_name: the certificates's common name, typically the holder's identification
+    :param organization: the reference organization
+    :param locality: the reference locality, typically the name of a city
+    :param province: the reference province, typically the name of a state or province
+    :param country: the uppercase two-letter *Country Code Top-Level Domain* (ccTLD)
+    :param valid_from: the certificate's validation start (defaults to now)
+    :param valid_for: the certificate's validity period, in days (defaults to 365)
+    :return: a self-signed x509 digital certificate, along with its private key
+    """
+    # generate RSA private key
+    result_pk: RSAPrivateKey = rsa.generate_private_key(public_exponent=65537,
+                                                        key_size=2048,
+                                                        backend=default_backend())
+    # build 'subject'
+    subject: x509.Name = x509.Name([x509.NameAttribute(oid=NameOID.COUNTRY_NAME,
+                                                       value=country),
+                                    x509.NameAttribute(oid=NameOID.STATE_OR_PROVINCE_NAME,
+                                                       value=province),
+                                    x509.NameAttribute(oid=NameOID.LOCALITY_NAME,
+                                                       value=locality),
+                                    x509.NameAttribute(oid=NameOID.ORGANIZATION_NAME,
+                                                       value=organization),
+                                    x509.NameAttribute(oid=NameOID.COMMON_NAME,
+                                                       value=common_name)])
+    # same as 'subject' for self-signed certificates
+    issuer: x509.Name = subject
+
+    # validity period
+    if valid_from is None:
+        valid_from = datetime.now(tz=UTC)
+    valid_to: datetime = valid_from + timedelta(days=valid_for)
+
+    # build the certificate
+    result_cert: x509.Certificate = (x509.CertificateBuilder()
+                                         .subject_name(name=subject)
+                                         .issuer_name(name=issuer)
+                                         .public_key(key=result_pk.public_key())
+                                         .serial_number(number=x509.random_serial_number())
+                                         .not_valid_before(time=valid_from)
+                                         .not_valid_after(time=valid_to)
+                                         .add_extension(extval=x509.BasicConstraints(ca=True,
+                                                                                     path_length=None),
+                                                        critical=True)
+                                         .sign(result_pk, hashes.SHA256(), default_backend()))
+    return result_cert, result_pk
+
+
+def cert_get_trusted(fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x509.Certificate]:
+    """
+    Retrieve the certificates in the trusted store of the host OS.
+
+    The return format of the individual certificates must be specified in *fmt*:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
+        - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
+
+    :param fmt: the format to use to output the individual certificates
+    :return: the list of certificates in the trusted store of the host OS
+    """
+    # initialize the return variable
+    result: list[str | bytes | x509.Certificate] = []
+
+    # read the trusted store
+    ca_path: Path = Path(certifi.where())
+    with ca_path.open("rb") as f:
+        pem_data: bytes = f.read()
+
+    # iterate on the certificates
+    certs_pem: list[bytes] = pem_data.split(b"-----END CERTIFICATE-----")
+    for cert_pem in certs_pem:
+        cert_pem += b"-----END CERTIFICATE-----"
+        if fmt == "pem":
+            result.append(cert_pem.decode(encoding="utf-8"))
+        else:
+            cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem)
+            if cert_pem == "der":
+                result.append(cert_x509.public_bytes(encoding=Encoding.DER))
+            else:
+                result.append(cert_x509)
+    return result
 
 
 def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
@@ -39,7 +132,7 @@ def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
         - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
 
     :param certs: the certificates to bundle
-    :param fmt: the format to use for the individual certificates
+    :param fmt: the format to use to output the individual certificates
     :return: the bundle certificatrs as a char string or byte string
     """
     # initialize the return variable
@@ -88,7 +181,7 @@ def cert_unbundle_certs(certs: str | bytes,
         - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
 
     :param certs: the certificates to bundle
-    :param fmt: the format to use for the individual certificates
+    :param fmt: the format to use to output the individual certificates
     :return: the bundle certificatrs as a char string or byte string
     """
     # initialize the return variable
@@ -99,16 +192,15 @@ def cert_unbundle_certs(certs: str | bytes,
         # 'certs' is a PEM bundle
         certs_pem: list[str] = certs.split("-----END CERTIFICATE-----")
         for cert_pem in certs_pem:
-            if "-----BEGIN CERTIFICATE-----" in cert_pem:
-                cert_pem += "-----END CERTIFICATE-----"
-                if fmt == "pem":
-                    result.append(cert_pem)
+            cert_pem += "-----END CERTIFICATE-----"
+            if fmt == "pem":
+                result.append(cert_pem)
+            else:
+                cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem.encode("utf-8"))
+                if cert_pem == "der":
+                    result.append(cert_x509.public_bytes(encoding=Encoding.DER))
                 else:
-                    cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem.encode("utf-8"))
-                    if cert_pem == "der":
-                        result.append(cert_x509.public_bytes(encoding=Encoding.DER))
-                    else:
-                        result.append(cert_x509)
+                    result.append(cert_x509)
     else:
         # 'certs' is a DER bundle
         offset: int = 0
@@ -127,42 +219,6 @@ def cert_unbundle_certs(certs: str | bytes,
                                                                              backend=default_backend())
                 if fmt == "pem":
                     result.append(cert_x509.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8"))
-                else:
-                    result.append(cert_x509)
-    return result
-
-
-def cert_get_trusted(fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x509.Certificate]:
-    """
-    Retrieve the certificates in the trusted store of the host OS.
-
-    The return format of the individual certificates must be specified in *fmt*:
-        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
-        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
-        - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
-
-    :param fmt: the format to use for the individual certificates
-    :return: the list of certificates in the trusted store of the host OS
-    """
-    # initialize the return variable
-    result: list[str | bytes | x509.Certificate] = []
-
-    # read the trusted store
-    ca_path: Path = Path(certifi.where())
-    with ca_path.open("rb") as f:
-        pem_data: bytes = f.read()
-
-    # iterate on the certificates
-    certs_pem: list[bytes] = pem_data.split(b"-----END CERTIFICATE-----")
-    for cert_pem in certs_pem:
-        if b"-----BEGIN CERTIFICATE-----" in cert_pem:
-            cert_pem += b"-----END CERTIFICATE-----"
-            if fmt == "pem":
-                result.append(cert_pem.decode(encoding="utf-8"))
-            else:
-                cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem)
-                if cert_pem == "der":
-                    result.append(cert_x509.public_bytes(encoding=Encoding.DER))
                 else:
                     result.append(cert_x509)
     return result
@@ -302,7 +358,7 @@ def cert_verify_revocation(cert: x509.Certificate,
         - the newer *Online Certificate Status Protocol* (OCSP) protocol is used
 
     :param cert: the reference certificate
-    :param issuer: the certificater issuer
+    :param issuer: the certificate issuer
     :param logger: optional logger
     :return: *True* if the certificate is in good standing, *False* otherwise
     """

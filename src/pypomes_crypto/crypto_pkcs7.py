@@ -54,12 +54,12 @@ class CryptoPkcs7:
         signature_timestamp: datetime       # the signature's timestamp
         public_key: ChpPublicKey            # the public key (most likely, RSAPublicKey)
         signer_common_name: str             # the name of the certificate's signer
-        signer_cert: x509.Certificate       # the reference certificate (latest one in the certificate chain)
+        signer_cert: x509.Certificate       # the reference certificate (latest one in the chain)
         cert_serial_number: int             # the certificate's serial nmumber
         cert_fingerprint: str               # the certificate's fingerprint
         cert_chain: list[bytes]             # the serialized X509 certificate chain (in DER format)
 
-        # TSA (Tme Stamping Authority) data
+        # TSA (Time Stamping Authority) data
         tsa_timestamp: datetime             # the signature's timestamp
         tsa_policy: str                     # the TSA's policy
         tsa_serial_number: str              # the timestamping's serial number
