@@ -3,7 +3,6 @@ import base64
 import sys
 from asn1crypto import cms, tsp
 from cryptography import x509
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
@@ -64,14 +63,12 @@ class CryptoPdf:
         signer_common_name: str                   # the name of the certificate's signer
         signer_cert: x509.Certificate             # the reference certificate (latest one in the chain)
         cert_serial_number: int                   # the certificate's serial nmumber
-        cert_fingerprint: str                     # the certificate's fingerprint
         cert_chain: list[bytes]                   # the serialized X509 certificate chain (in DER format)
 
         # TSA (Time Stamping Authority) data
         tsa_timestamp: datetime                   # the signature's timestamp
         tsa_policy: str                           # the TSA's policy
         tsa_serial_number: str                    # the timestamping's serial number
-        tsa_fingerprint: str                      # the timestamping's fingerprint
 
     def __init__(self,
                  pdf_data: Path | str | bytes,
@@ -86,18 +83,17 @@ class CryptoPdf:
           - type *Path*: *pdf_data* is a path to a file holding the data
 
         If *pdf_data* is encrypted, the decryption password must be provided in *pdf_pwd*.
-        For additional security, fingerprints in *SHA256* are calculated for every certificate
-        in the certificate chain.
 
         :param pdf_data: a digitally signed, *PAdES* cxonformant, PDF file
         :param pdf_pwd: optional password for file decryption
         :param errors: incidental errors (may be non-empty)
         """
-        # initialize the structure holding the crypto data
+        # declare/initialize the instance variables
         self.signatures: list[CryptoPdf.SignatureInfo] = []
+        self.pdf_bytes: bytes
 
         # retrieve the PDF data
-        self.pdf_bytes: bytes = file_get_data(file_data=pdf_data)
+        self.pdf_bytes = file_get_data(file_data=pdf_data)
 
         # define a local errors list
         curr_errors: list[str] = []
@@ -168,11 +164,9 @@ class CryptoPdf:
                 cert_chain.append(der_bytes)
 
             # extract certificates and public key
-            signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_chain[0],
-                                                                           backend=default_backend())
+            signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_chain[0])
             public_key: ChpPublicKey = signer_cert.public_key()
             cert_serial_number: int = signer_cert.serial_number
-            cert_fingerprint: str = signer_cert.fingerprint(chp_hash).hex()
 
             # identify signer
             subject: x509.name.Name = signer_cert.subject
@@ -182,7 +176,6 @@ class CryptoPdf:
             tsa_timestamp: datetime | None = None
             tsa_policy: str | None = None
             tsa_serial_number: str | None = None
-            tsa_fingerprint: str | None = None
 
             unsigned_attrs: cms.CMSAttributes = signer_info["unsigned_attrs"]
             for unsigned_attr in unsigned_attrs:
@@ -202,12 +195,6 @@ class CryptoPdf:
                         tsa_policy = tst_info["policy"].native
                         tsa_serial_number = hex(tst_info["serial_number"].native)
 
-                        # calculate the TSA certificate fingerprint
-                        tsa_cert = signed_data["certificates"][0]
-                        tsa_cert_bytes = tsa_cert.dump()
-                        tsa_cert_obj = x509.load_der_x509_certificate(data=tsa_cert_bytes,
-                                                                      backend=default_backend())
-                        tsa_fingerprint: str = tsa_cert_obj.fingerprint(chp_hash).hex()
                     except Exception as e:
                         # unable to obtain TAS data: error parsing token
                         if CryptoPdf.logger:
@@ -253,12 +240,10 @@ class CryptoPdf:
                 signer_common_name=signer_common_name,
                 signer_cert=signer_cert,
                 cert_serial_number=cert_serial_number,
-                cert_fingerprint=cert_fingerprint,
                 cert_chain=cert_chain,
                 tsa_timestamp=tsa_timestamp,
                 tsa_policy=tsa_policy,
-                tsa_serial_number=tsa_serial_number,
-                tsa_fingerprint=tsa_fingerprint
+                tsa_serial_number=tsa_serial_number
             )
             self.signatures.append(sig_info)
 
@@ -385,14 +370,6 @@ class CryptoPdf:
         sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
         cert: x509.Certificate = sig_info.signer_cert
 
-        # compute fingerprints for the entire certificate chain
-        chain_fingerprints: list[str] = []
-        for cert_bytes in sig_info.cert_chain:
-            chain_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_bytes,
-                                                                          backend=default_backend())
-            chp_hash: ChpHash = _chp_hash(alg=sig_info.hash_algorithm)
-            chain_fingerprints.append(chain_cert.fingerprint(chp_hash).hex())
-
         result: dict[str, Any] = {
             "signer-common-name": sig_info.signer_common_name,
             "hash-algorithm": sig_info.hash_algorithm,
@@ -403,17 +380,14 @@ class CryptoPdf:
             "cert-not-after": cert.not_valid_after,
             "cert-subject": cert.subject.rfc4514_string(),
             "cert-issuer": cert.issuer.rfc4514_string(),
-            "cert-fingerprint": sig_info.cert_fingerprint,
-            "cert-chain-length": len(sig_info.cert_chain),
-            "cert-chain-fingerprints": chain_fingerprints
+            "cert-chain-length": len(sig_info.cert_chain)
         }
         # add the TSA details
-        if sig_info.tsa_fingerprint:
+        if sig_info.tsa_serial_number:
             result.update({
                 "tsa-timestamp": sig_info.tsa_timestamp,
                 "tsa-policy": sig_info.tsa_policy,
-                "tsa-serial-number": sig_info.tsa_serial_number,
-                "tsa-fingerprint": sig_info.tsa_fingerprint
+                "tsa-serial-number": sig_info.tsa_serial_number
             })
 
         return result

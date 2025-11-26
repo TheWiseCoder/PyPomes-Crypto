@@ -1,7 +1,7 @@
 import hashlib
 import pickle
 import sys
-from asn1crypto import cms
+from asn1crypto import cms, pem, x509 as asn1crypto_x509
 from collections.abc import Iterable
 from contextlib import suppress
 from Crypto.Cipher import AES
@@ -26,7 +26,7 @@ from pypomes_core import file_get_data, exc_format
 
 from .crypto_common import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
-    HashAlgorithm, ChpHash, _chp_hash
+    HashAlgorithm, ChpPublicKey, ChpHash, _chp_hash
 )
 
 
@@ -269,7 +269,7 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
     A1 certificate and its corresponding public key, the certificate chain, the original payload
     (if *attached* mode, only), and the digital signature.
 
-    :param p7s_data: the PKCS#7 signature data containing A1 certificate
+    :param p7s_data: the PKCS#7 signature data containing A1 certificate, in *DER* or *PEM* format
     :param doc_data: the original document data (required for detached mode)
     :param errors: incidental errors (may be non-empty)
     :param logger: optional logger
@@ -278,77 +278,131 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
     # initialize the return variable
     result: bool | None = None
 
-    # retrieve the certificate raw bytes
+    # retrieve the certificate raw bytes (if PEM, convert to DER)
     p7_bytes: bytes = file_get_data(file_data=p7s_data)
+    if pem.detect(p7_bytes):
+        _, _, p7_bytes = pem.unarmor(pem_bytes=p7_bytes)
 
     # parse the CMS structure
     err_msg: str | None = None
+    content_info: cms.ContentInfo | None = None
+    try:
+        content_info = cms.ContentInfo.load(encoded_data=p7_bytes)
+    except Exception as e:
+        err_msg = exc_format(exc=e,
+                             exc_info=sys.exc_info())
+
     signed_data: cms.SignedData | None = None
     payload: bytes | None = None
-    content_info: cms.ContentInfo = cms.ContentInfo.load(encoded_data=p7_bytes)
-    if content_info["content_type"].native == "signed_data":
-        # signatures in PKCS#7 are parallel, not chained, so they share the same payload
-        signed_data = content_info["content"]
-        embedded_content: bytes = signed_data["encap_content_info"]["content"].native
+    if not err_msg:
+        if content_info["content_type"].native == "signed_data":
+            # signatures in PKCS#7 are parallel, not chained, so they share the same payload
+            signed_data = content_info["content"]
+            embedded_content: bytes = signed_data["encap_content_info"]["content"].native
 
-        # determine attached vs detached
-        if embedded_content:
-            # attached mode: use embedded content for digest
-            payload = embedded_content
-        elif doc_data:
-            # detached mode: use external document
-            payload = file_get_data(file_data=doc_data)
+            # determine attached vs detached
+            if embedded_content:
+                # attached mode: use embedded content for digest
+                payload = embedded_content
+            elif doc_data:
+                # detached mode: use external document
+                payload = file_get_data(file_data=doc_data)
+            else:
+                err_msg = "For detached mode, a payload file must be provided"
         else:
-            err_msg = "For detached mode, a payload file must be provided"
-    else:
-        err_msg = "'p7_data' is not a signed PKCS#7 file"
+            err_msg = "'p7_data' is not a signed PKCS#7 file"
 
     if not err_msg:
         # extract the signatures
-        signer_infos: list[cms.SignerInfo] = signed_data["signer_infos"]
+        signer_infos: list[cms.SignerInfo] = signed_data["signer_infos"] or []
 
-        if signer_infos:
-            # traverse the signatures
-            result = True
-            for signer_info in signer_infos:
-                # structure and compute the digest
-                signature_bytes: bytes = signer_info["signature"].native
-                signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
-                alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
-                chp_hash: ChpHash = _chp_hash(alg=HashAlgorithm(alg_name))
-                computed_digest: bytes = crypto_hash(msg=payload,
-                                                     alg=HashAlgorithm(alg_name))
-                # extract the certificate
-                cert_data = signed_data["certificates"][0].chosen.dump()
-                cert = x509.load_der_x509_certificate(data=cert_data)
-                public_key = cert.public_key()
-                try:
-                    if isinstance(public_key, RSAPublicKey):
-                        # determine the signature padding used
-                        if "pss" in signature_algorithm:
-                            signature_padding: padding.AsymmetricPadding = padding.PSS(
-                                mgf=padding.MGF1(algorithm=chp_hash),
-                                salt_length=padding.PSS.MAX_LENGTH
-                            )
-                        else:
-                            signature_padding: padding.AsymmetricPadding = padding.PKCS1v15()
-                        public_key.verify(signature=signature_bytes,
-                                          data=computed_digest,
-                                          padding=signature_padding,
-                                          algorithm=Prehashed(chp_hash))
-                    else:
-                        public_key.verify(signature=signature_bytes,
-                                          data=computed_digest,
-                                          algorithm=Prehashed(chp_hash))
-                    if logger:
-                        logger.debug(msg="Signature verification successful")
-                except Exception as e:
-                    if logger:
-                        logger.warning(msg=f"Signature verification failed: {e}")
-                    result = False
+        # traverse the signatures
+        result = True
+        for signer_info in signer_infos:
+            # retrieve the signature properties
+            signature_bytes: bytes = signer_info["signature"].native
+            signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
+            alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
+
+            # extract the correct certificate
+            signer_id: cms.SignerIdentifier = signer_info["sid"]
+            signer_cert_bytes: bytes | None = None
+            certs: cms.CertificateSet = signed_data["certificates"]
+            for cert_choice in certs:
+                # HAZARD: 'cert' is not a 'cryptography.x509.Certificate' object
+                # (thus the need to dump it to DER bytes)
+                cert: asn1crypto_x509.Certificate = cert_choice.chosen
+                der_bytes: bytes = cert.dump()
+                if signer_cert_bytes is None:
+                    if signer_id.name == "issuer_and_serial_number":
+                        # match issuer and serial number
+                        if cert.issuer == signer_id.chosen["issuer"] and \
+                           cert.serial_number == signer_id.chosen["serial_number"].native:
+                            signer_cert_bytes = der_bytes
+                    elif signer_id.name == "subject_key_identifier":
+                        # extract SKI from certificate extensions
+                        for ext in cert["tbs_certificate"]["extensions"]:
+                            if ext["extn_id"].native == "subject_key_identifier" and \
+                                    ext["extn_value"].native == signer_id.chosen.native:
+                                signer_cert_bytes = der_bytes
+                                break
+
+            # extract the public key
+            cert = x509.load_der_x509_certificate(data=signer_cert_bytes)
+            public_key: ChpPublicKey = cert.public_key()
+
+            # extract the payload hash
+            stored_hash: bytes | None = None
+            signed_attrs: cms.CMSAttributes = signer_info["signed_attrs"] or []
+            for signed_attr in signed_attrs:
+                attr_type: str = signed_attr["type"].native
+                if attr_type == "message_digest":
+                    stored_hash = signed_attr["values"][0].native
                     break
-        else:
-            # signatures not retrieved, report the problem
+
+            # validate the payload hash
+            computed_hash: bytes = crypto_hash(msg=payload,
+                                               alg=HashAlgorithm(alg_name))
+            if computed_hash != stored_hash:
+                # hashes do not match
+                err_msg = "Computed and stored digest values do not match"
+                break
+
+            # validate the signature
+            chp_hash: ChpHash = _chp_hash(alg=HashAlgorithm(alg_name))
+            if signed_attrs:
+                # when 'signed_attrs' exists, the signature covers those attributes, not the raw data
+                computed_hash = crypto_hash(msg=signed_attrs.dump(),
+                                            alg=HashAlgorithm(alg_name))
+            try:
+                if isinstance(public_key, RSAPublicKey):
+                    # determine the signature padding used
+                    if "pss" in signature_algorithm:
+                        signature_padding: padding.AsymmetricPadding = padding.PSS(
+                            mgf=padding.MGF1(algorithm=chp_hash),
+                            salt_length=padding.PSS.MAX_LENGTH
+                        )
+                    else:
+                        signature_padding: padding.AsymmetricPadding = padding.PKCS1v15()
+
+                    public_key.verify(signature=signature_bytes,
+                                      data=computed_hash,
+                                      padding=signature_padding,
+                                      algorithm=Prehashed(chp_hash))
+                else:
+                    public_key.verify(signature=signature_bytes,
+                                      data=computed_hash,
+                                      algorithm=Prehashed(chp_hash))
+                if logger:
+                    logger.debug(msg="Signature verification successful")
+            except Exception as e:
+                if logger:
+                    logger.warning(msg=f"Signature verification failed: {e}")
+                result = False
+                break
+
+        if not signer_infos:
+            # signatures not retrieved
             err_msg = "The file is not digitally signed"
 
     if err_msg:

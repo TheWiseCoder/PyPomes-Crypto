@@ -4,11 +4,10 @@ import requests
 import struct
 from contextlib import suppress
 from cryptography import x509
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 from cryptography.x509.ocsp import OCSPRequestBuilder, load_der_ocsp_response
 from cryptography.x509.oid import NameOID
 from datetime import UTC, datetime, timedelta
@@ -26,67 +25,89 @@ def cert_generate(common_name: str,
                   province: str,
                   country: str,
                   valid_from: datetime = None,
-                  valid_for: int = 365) -> tuple[x509.Certificate, RSAPrivateKey]:
+                  valid_for: int = 365,
+                  fmt: Literal["der", "pem", "x509"] = "der") -> (tuple[str, str] |
+                                                                  tuple[bytes, bytes] |
+                                                                  tuple[x509.Certificate, RSAPrivateKey]):
     """
     Generate a self-signed x509 digital certificate/private key set.
+
+    The return format of the certificate and private key is specified in *fmt*:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
+        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
+        - *x509*: *cryptography*'s *Certificate* and *RSAPrivateKey* objects
 
     :param common_name: the certificates's common name, typically the holder's identification
     :param organization: the reference organization
     :param locality: the reference locality, typically the name of a city
     :param province: the reference province, typically the name of a state or province
-    :param country: the uppercase two-letter *Country Code Top-Level Domain* (ccTLD)
+    :param country: the two-letter *Country Code Top-Level Domain* (ccTLD)
     :param valid_from: the certificate's validation start (defaults to now)
-    :param valid_for: the certificate's validity period, in days (defaults to 365)
+    :param valid_for: the certificate's validity period, in days (defaults to one year)
+    :param fmt: the output format to use for the certificate and private key (defaults to *der*)
     :return: a self-signed x509 digital certificate, along with its private key
     """
     # generate RSA private key
-    result_pk: RSAPrivateKey = rsa.generate_private_key(public_exponent=65537,
-                                                        key_size=2048,
-                                                        backend=default_backend())
-    # build 'subject'
-    subject: x509.Name = x509.Name([x509.NameAttribute(oid=NameOID.COUNTRY_NAME,
-                                                       value=country),
-                                    x509.NameAttribute(oid=NameOID.STATE_OR_PROVINCE_NAME,
-                                                       value=province),
-                                    x509.NameAttribute(oid=NameOID.LOCALITY_NAME,
-                                                       value=locality),
-                                    x509.NameAttribute(oid=NameOID.ORGANIZATION_NAME,
-                                                       value=organization),
-                                    x509.NameAttribute(oid=NameOID.COMMON_NAME,
-                                                       value=common_name)])
-    # same as 'subject' for self-signed certificates
-    issuer: x509.Name = subject
-
-    # validity period
+    private_key: RSAPrivateKey = rsa.generate_private_key(public_exponent=65537,
+                                                          key_size=2048)
+    # build 'subject' and 'ìssuer'
+    # (they are the same for self-signed certificates)
+    subject_issuer: x509.Name = x509.Name([x509.NameAttribute(oid=NameOID.COUNTRY_NAME,
+                                                              value=country.upper()),
+                                           x509.NameAttribute(oid=NameOID.STATE_OR_PROVINCE_NAME,
+                                                              value=province),
+                                           x509.NameAttribute(oid=NameOID.LOCALITY_NAME,
+                                                              value=locality),
+                                           x509.NameAttribute(oid=NameOID.ORGANIZATION_NAME,
+                                                              value=organization),
+                                           x509.NameAttribute(oid=NameOID.COMMON_NAME,
+                                                              value=common_name)])
+    # build the validity period
     if valid_from is None:
         valid_from = datetime.now(tz=UTC)
     valid_to: datetime = valid_from + timedelta(days=valid_for)
 
     # build the certificate
-    result_cert: x509.Certificate = (x509.CertificateBuilder()
-                                         .subject_name(name=subject)
-                                         .issuer_name(name=issuer)
-                                         .public_key(key=result_pk.public_key())
+    certificate: x509.Certificate = (x509.CertificateBuilder()
+                                         .subject_name(name=subject_issuer)
+                                         .issuer_name(name=subject_issuer)
+                                         .public_key(key=private_key.public_key())
                                          .serial_number(number=x509.random_serial_number())
                                          .not_valid_before(time=valid_from)
                                          .not_valid_after(time=valid_to)
                                          .add_extension(extval=x509.BasicConstraints(ca=True,
                                                                                      path_length=None),
                                                         critical=True)
-                                         .sign(result_pk, hashes.SHA256(), default_backend()))
-    return result_cert, result_pk
+                                         .sign(private_key=private_key,
+                                               algorithm=hashes.SHA256()))
+    # format the output
+    result: tuple[str, str] | tuple[bytes, bytes] | tuple[x509.Certificate, RSAPrivateKey]
+    if fmt == "der":
+        result = (certificate.public_bytes(encoding=Encoding.DER),
+                  private_key.private_bytes(encoding=Encoding.DER,
+                                            format=PrivateFormat.TraditionalOpenSSL,
+                                            encryption_algorithm=NoEncryption()))
+    elif fmt == "pem":
+        result = (certificate.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8"),
+                  private_key.private_bytes(encoding=Encoding.PEM,
+                                            format=PrivateFormat.TraditionalOpenSSL,
+                                            encryption_algorithm=NoEncryption()).decode(encoding="utf-8"))
+    else:
+        result = (certificate, private_key)
+
+    return result
 
 
 def cert_get_trusted(fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x509.Certificate]:
     """
     Retrieve the certificates in the trusted store of the host OS.
 
-    The return format of the individual certificates must be specified in *fmt*:
-        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+    The return format of the individual certificates is specified in *fmt*:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
         - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
         - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
 
-    :param fmt: the format to use to output the individual certificates
+    :param fmt: the output format to use for the individual certificates (defaults to *der*)
     :return: the list of certificates in the trusted store of the host OS
     """
     # initialize the return variable
@@ -109,16 +130,17 @@ def cert_get_trusted(fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x
                 result.append(cert_x509.public_bytes(encoding=Encoding.DER))
             else:
                 result.append(cert_x509)
+
     return result
 
 
 def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
-                      fmt: Literal["der", "pem"]) -> str | bytes:
+                      fmt: Literal["der", "pem"] = "der") -> str | bytes:
     """
     Bundle the certificates in *certs* into a single char string or byte string.
 
     The format of the individual input certificates can be:
-        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
         - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
         - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
 
@@ -127,12 +149,12 @@ def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
     single byte string, a way to delimit them for later unbundling is therefore needed. The approach used
     here is to prefix each certificate with its length in a fixed-size header.
 
-    The output format is given by *fmt*:
-        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+    The output format of the bundle is given by *fmt*:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
         - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
 
     :param certs: the certificates to bundle
-    :param fmt: the format to use to output the individual certificates
+    :param fmt: the output format to use for the individual certificates (defaults to *der*)
     :return: the bundle certificatrs as a char string or byte string
     """
     # initialize the return variable
@@ -162,12 +184,12 @@ def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
 
 
 def cert_unbundle_certs(certs: str | bytes,
-                        fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x509.Certificate]:
+                        fmt: Literal["der", "pem", "x509"] = "der") -> list[str | bytes | x509.Certificate]:
     """
     Unbundle the certificates in *certs* into a list of certificates.
 
     The format of the individual input certificates in the bundle can be:
-        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
         - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
 
     *PEM* is a text format with clear delimiters ('-----BEGIN CERTIFICATE-----' and '-----END CERTIFICATE-----'),
@@ -175,13 +197,13 @@ def cert_unbundle_certs(certs: str | bytes,
     single byte string, a way to delimit them for later unbundling is therefore needed. The approach used
     here was to prefix each certificate with its length in a fixed-size header.
 
-    The return format of the individual certificates must be specified in *fmt*:
-        - *der*: *Distinguished Encoding Rules*, binary as *bytes*
+    The return format of the individual certificates is specified in *fmt*:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
         - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
         - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
 
     :param certs: the certificates to bundle
-    :param fmt: the format to use to output the individual certificates
+    :param fmt: the output format to use for the individual certificates (defaults to *der*)
     :return: the bundle certificatrs as a char string or byte string
     """
     # initialize the return variable
@@ -215,8 +237,7 @@ def cert_unbundle_certs(certs: str | bytes,
                 result.append(cert_der)
             else:
                 # load certificate
-                cert_x509: x509.Certificate = x509.load_der_x509_certificate(data=cert_der,
-                                                                             backend=default_backend())
+                cert_x509: x509.Certificate = x509.load_der_x509_certificate(data=cert_der)
                 if fmt == "pem":
                     result.append(cert_x509.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8"))
                 else:
