@@ -12,6 +12,7 @@ from cryptography.x509.ocsp import OCSPRequestBuilder, load_der_ocsp_response
 from cryptography.x509.oid import NameOID
 from datetime import UTC, datetime, timedelta
 from logging import Logger
+from OpenSSL import crypto
 from pathlib import Path
 from pypomes_core import exc_format
 from typing import Any, Literal
@@ -133,6 +134,40 @@ def cert_get_trusted(fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x
 
     return result
 
+
+def cert_to_pfx(certificate: x509.Certificate,
+                private_key: RSAPrivateKey,
+                pfx_password: str | bytes = None,
+                friendly_name: str = None) -> bytes:
+    """
+    Generate a PFX (PKCS#12) file from cryptography's *Certificate* and *RSAPrivateKey* objects.
+
+    :param certificate: the cryptography.x509.Certificate object
+    :param private_key: the cryptography.hazmat.primitives.asymmetric.rsa.RSAPrivateKey object
+    :param pfx_password: optional password for the PFX file
+    :param friendly_name: optional friendly name for the certificate in the PFX file.
+    :return: Tte PFX file content as bytes
+    """
+    # serialize the cryptography objects to PEM format
+    cert_pem = certificate.public_bytes(Encoding.PEM)
+    private_key_pem: bytes = private_key.private_bytes(encoding=Encoding.PEM,
+                                                       format=PrivateFormat.PKCS8,
+                                                       encryption_algorithm=NoEncryption())
+    # Load the PEM data into pyOpenSSL objects
+    pyopenssl_cert = crypto.load_certificate(crypto.FILETYPE_PEM, cert_pem)
+    pyopenssl_private_key = crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_pem)
+
+    # Create the PKCS12 object
+    pfx = crypto.PKCS12()
+    pfx.set_certificate(pyopenssl_cert)
+    pfx.set_privatekey(pyopenssl_private_key)
+
+    if friendly_name:
+        pfx.set_friendlyname(friendly_name.encode('utf-8'))
+
+    # Export the PFX
+    pfx_data = pfx.export(passphrase=pfx_password.encode('utf-8') if pfx_password else None)
+    return pfx_data
 
 def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
                       fmt: Literal["der", "pem"] = "der") -> str | bytes:

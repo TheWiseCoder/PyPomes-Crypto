@@ -285,44 +285,43 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
 
     # parse the CMS structure
     err_msg: str | None = None
-    content_info: cms.ContentInfo | None = None
+    signed_data: cms.SignedData | None = None
     try:
-        content_info = cms.ContentInfo.load(encoded_data=p7_bytes)
+        content_info: cms.ContentInfo = cms.ContentInfo.load(encoded_data=p7_bytes)
+        if content_info["content_type"].native == "signed_data":
+            signed_data = content_info["content"]
+        else:
+            err_msg = "'p7_data' does not hold a valid PKCS#7 file"
     except Exception as e:
         err_msg = exc_format(exc=e,
                              exc_info=sys.exc_info())
 
-    signed_data: cms.SignedData | None = None
     payload: bytes | None = None
     if not err_msg:
-        if content_info["content_type"].native == "signed_data":
-            # signatures in PKCS#7 are parallel, not chained, so they share the same payload
-            signed_data = content_info["content"]
-            embedded_content: bytes = signed_data["encap_content_info"]["content"].native
+        # signatures in PKCS#7 are parallel, not chained, so they share the same payload
+        embedded_content: bytes = signed_data["encap_content_info"]["content"].native
 
-            # determine attached vs detached
-            if embedded_content:
-                # attached mode: use embedded content for digest
-                payload = embedded_content
-            elif doc_data:
-                # detached mode: use external document
-                payload = file_get_data(file_data=doc_data)
-            else:
-                err_msg = "For detached mode, a payload file must be provided"
+        # determine attached vs detached
+        if embedded_content:
+            # attached mode: use embedded content for digest
+            payload = embedded_content
+        elif doc_data:
+            # detached mode: use external document
+            payload = file_get_data(file_data=doc_data)
         else:
-            err_msg = "'p7_data' is not a signed PKCS#7 file"
+            err_msg = "For detached mode, a payload file must be provided"
 
     if not err_msg:
         # extract the signatures
-        signer_infos: list[cms.SignerInfo] = signed_data["signer_infos"] or []
+        signer_infos: list[cms.SignerInfo] = signed_data["signer_infos"]
 
         # traverse the signatures
-        result = True
         for signer_info in signer_infos:
             # retrieve the signature properties
             signature_bytes: bytes = signer_info["signature"].native
             signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
             alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
+            hash_algorithm: HashAlgorithm = HashAlgorithm(alg_name)
 
             # extract the correct certificate
             signer_id: cms.SignerIdentifier = signer_info["sid"]
@@ -348,12 +347,12 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
                                 break
 
             # extract the public key
-            cert = x509.load_der_x509_certificate(data=signer_cert_bytes)
-            public_key: ChpPublicKey = cert.public_key()
+            signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=signer_cert_bytes)
+            public_key: ChpPublicKey = signer_cert.public_key()
 
             # extract the payload hash
             stored_hash: bytes | None = None
-            signed_attrs: cms.CMSAttributes = signer_info["signed_attrs"] or []
+            signed_attrs: cms.CMSAttributes = signer_info["signed_attrs"]
             for signed_attr in signed_attrs:
                 attr_type: str = signed_attr["type"].native
                 if attr_type == "message_digest":
@@ -362,18 +361,21 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
 
             # validate the payload hash
             computed_hash: bytes = crypto_hash(msg=payload,
-                                               alg=HashAlgorithm(alg_name))
-            if computed_hash != stored_hash:
+                                               alg=hash_algorithm)
+            if not stored_hash:
+                if logger:
+                    logger.warning(msg="'p7s_data' has no stored payload digest")
+            elif computed_hash != stored_hash:
                 # hashes do not match
                 err_msg = "Computed and stored digest values do not match"
                 break
 
             # validate the signature
-            chp_hash: ChpHash = _chp_hash(alg=HashAlgorithm(alg_name))
+            chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
             if signed_attrs:
                 # when 'signed_attrs' exists, the signature covers those attributes, not the raw data
                 computed_hash = crypto_hash(msg=signed_attrs.dump(),
-                                            alg=HashAlgorithm(alg_name))
+                                            alg=hash_algorithm)
             try:
                 if isinstance(public_key, RSAPublicKey):
                     # determine the signature padding used
@@ -393,26 +395,19 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
                     public_key.verify(signature=signature_bytes,
                                       data=computed_hash,
                                       algorithm=Prehashed(chp_hash))
+                result = True
                 if logger:
                     logger.debug(msg="Signature verification successful")
             except Exception as e:
+                result = False
                 if logger:
                     logger.warning(msg=f"Signature verification failed: {e}")
-                result = False
                 break
-
-        if not signer_infos:
-            # signatures not retrieved
-            err_msg = "The file is not digitally signed"
-
     if err_msg:
         if logger:
             logger.error(msg=err_msg)
         if isinstance(errors, list):
             errors.append(err_msg)
-
-    if result and logger:
-        logger.debug(msg="Signature verification successful")
 
     return result
 

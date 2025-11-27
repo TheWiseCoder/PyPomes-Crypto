@@ -6,7 +6,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -94,9 +94,16 @@ class CryptoPkcs7:
         curr_errors: list[str] = []
 
         # extract the base CMS structure
-        content_info: cms.ContentInfo | None = None
+        signed_data: cms.SignedData | None = None
         try:
             content_info = cms.ContentInfo.load(encoded_data=self.p7s_bytes)
+            if content_info["content_type"].native == "signed_data":
+                signed_data = content_info["content"]
+            else:
+                msg = "'p7_data' does not hold a valid PKCS#7 file"
+                if CryptoPkcs7.logger:
+                    CryptoPkcs7.logger.error(msg=msg)
+                curr_errors.append(msg)
         except Exception as e:
             msg: str = exc_format(exc=e,
                                   exc_info=sys.exc_info())
@@ -104,10 +111,7 @@ class CryptoPkcs7:
                 CryptoPkcs7.logger.error(msg=msg)
             curr_errors.append(msg)
 
-        signed_data: cms.SignedData | None = None
         if not curr_errors:
-            signed_data = content_info["content"]
-
             # signatures in PKCS#7 are parallel, not chained, so they share the same payload
             encap_content: core.OctetString = signed_data["encap_content_info"]["content"]
             if encap_content:
@@ -132,7 +136,6 @@ class CryptoPkcs7:
                 signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
                 alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
                 hash_algorithm: HashAlgorithm = HashAlgorithm(alg_name)
-                chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
 
                 stored_hash: bytes | None = None
                 signature_timestamp: datetime | None = None
@@ -149,7 +152,11 @@ class CryptoPkcs7:
                 from .crypto_pomes import crypto_hash
                 computed_hash: bytes = crypto_hash(msg=self.payload,
                                                    alg=hash_algorithm)
-                if computed_hash != stored_hash:
+                if not stored_hash:
+                    if CryptoPkcs7.logger:
+                        CryptoPkcs7.logger.warning(msg="'p7s_data' has no stored payload digest")
+                    stored_hash = computed_hash
+                elif computed_hash != stored_hash:
                     msg = "Computed and stored digest values do not match"
                     if CryptoPkcs7.logger:
                         CryptoPkcs7.logger.error(msg=msg)
@@ -163,7 +170,6 @@ class CryptoPkcs7:
                 certs: cms.CertificateSet = signed_data["certificates"]
                 for cert_choice in certs:
                     # HAZARD: 'cert' is not a 'cryptography.x509.Certificate' object
-                    # (thus the need to dump it to DER bytes)
                     cert: asn1crypto_x509.Certificate = cert_choice.chosen
                     der_bytes: bytes = cert.dump()
                     cert_chain.append(der_bytes)
@@ -226,6 +232,7 @@ class CryptoPkcs7:
                     # when 'signed_attrs' exists, the signature covers those attributes, not the raw data
                     computed_hash = crypto_hash(msg=signed_attrs.dump(),
                                                 alg=hash_algorithm)
+                chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
                 try:
                     if isinstance(public_key, RSAPublicKey):
                         # determine the signature padding used
@@ -268,12 +275,6 @@ class CryptoPkcs7:
                     tsa_serial_number=tsa_serial_number
                 )
                 self.signatures.append(sig_info)
-
-        if not curr_errors and not self.signatures:
-            msg: str = "No digital signatures found in PKCS#7 file"
-            if CryptoPkcs7.logger:
-                CryptoPkcs7.logger.error(msg=msg)
-            curr_errors.append(msg)
 
         if curr_errors and isinstance(errors, list):
             errors.extend(curr_errors)
@@ -435,7 +436,7 @@ class CryptoPkcs7:
     @staticmethod
     def create(doc_data: Path | str | bytes,
                pfx_data: Path | str | bytes,
-               pfx_pwd: str | bytes,
+               pfx_pwd: RSAPrivateKey | str | bytes,
                p7s_out: Path | str = None,
                hash_alg: HashAlgorithm = CRYPTO_DEFAULT_HASH_ALGORITHM,
                sig_mode: SignatureMode = SignatureMode.DETACHED,
