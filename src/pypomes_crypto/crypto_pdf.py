@@ -1,10 +1,12 @@
 from __future__ import annotations
 import base64
 import sys
+import tempfile
 from asn1crypto import cms, tsp
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from dataclasses import dataclass
@@ -30,7 +32,7 @@ from pypomes_core import TZ_LOCAL, file_get_data, exc_format
 from requests.auth import HTTPBasicAuth
 from typing import Any, Literal
 
-from .crypto_common import HashAlgorithm, ChpHash, ChpPublicKey, _chp_hash
+from .crypto_common import HashAlgorithm, ChpHash, _chp_hash
 
 
 class CryptoPdf:
@@ -59,7 +61,7 @@ class CryptoPdf:
         signature: bytes                          # the digital signature
         signature_algorithm: str                  # the algorithm used to generate the signature
         signature_timestamp: datetime             # the signature's timestamp
-        public_key: ChpPublicKey                  # the public key (most likely, RSAPublicKey)
+        public_key: PublicKeyTypes                # the public key (most likely, RSAPublicKey)
         signer_common_name: str                   # the name of the certificate's signer
         signer_cert: x509.Certificate             # the reference certificate (latest one in the chain)
         cert_serial_number: int                   # the certificate's serial nmumber
@@ -165,7 +167,7 @@ class CryptoPdf:
 
             # extract certificates and public key
             signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_chain[0])
-            public_key: ChpPublicKey = signer_cert.public_key()
+            public_key: PublicKeyTypes = signer_cert.public_key()
             cert_serial_number: int = signer_cert.serial_number
 
             # identify signer
@@ -422,7 +424,7 @@ class CryptoPdf:
     @staticmethod
     def create(pdf_in: Path | str | bytes,
                pfx_data: Path | str | bytes,
-               pfx_pwd: str,
+               pfx_pwd: str | bytes = None,
                pdf_out: Path | str = None,
                location: str = None,
                reason: str = None,
@@ -444,8 +446,8 @@ class CryptoPdf:
         Supports visible signature appearance, TSA timestamping, and multiple signatures.
 
         :param pdf_in: input PDF data
-        :param pfx_data: PKCS#12 (.pfx/.p12) certificate data
-        :param pfx_pwd: password for the certificate
+        :param pfx_data: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
+        :param pfx_pwd: password for the *.pfx* data (if not provided, *pfx_data* is assumed to be unencrypted)
         :param pdf_out: path to output the signed/re-signed PDF file (optional, no output if not provided)
         :param location: location of signing
         :param reason: reason for signing
@@ -461,17 +463,24 @@ class CryptoPdf:
         # initialize the return variable
         result: CryptoPdf | None = None
 
-        # make sure 'pfx_data' is a 'Path'
-        pfx_data = Path(pfx_data)
-
         # load the signing certificate and key from a PKCS#12 file
+        is_temp: bool = False
         pwd_bytes = pfx_pwd.encode() if isinstance(pfx_pwd, str) else pfx_pwd
+        if isinstance(pfx_data, str):
+            pfx_data = pfx_data.encode(encoding="utf-8")
+        if isinstance(pfx_data, bytes):
+            # PyHanko's SimpleSigner requires a path to a file
+            is_temp = True
+            with tempfile.NamedTemporaryFile(mode="wb",
+                                             delete=False) as tmp:
+                tmp.write(pfx_data)
+                pfx_data = Path(tmp.name)
         simple_signer: SimpleSigner = SimpleSigner.load_pkcs12(pfx_file=pfx_data,
                                                                passphrase=pwd_bytes)
-        if simple_signer:
-            # make sure 'pdf_in' is a 'Path'
-            pdf_in = Path(pdf_in)
+        if is_temp:
+            pfx_data.unlink(missing_ok=True)
 
+        if simple_signer:
             # cconfigure stamp style
             stamp_style: TextStampStyle | None = None
             if make_visible:
@@ -493,64 +502,70 @@ class CryptoPdf:
                 timestamper = HTTPTimeStamper(url=tsa_url,
                                               auth=auth,
                                               timeout=None)
-            # open PDF for incremental signing
+
+            # open PDF file for incremental signing
+            pdf_in = file_get_data(file_data=pdf_in)
+            pdf_stream: BytesIO = BytesIO(initial_bytes=pdf_in)
             output_buf: BytesIO | None = None
-            with pdf_in.open("rb") as f_in:
 
-                writer: IncrementalPdfFileWriter = IncrementalPdfFileWriter(input_stream=f_in,
-                                                                            strict=False)
-                # Use PdfFileReader to inspect fields
-                reader: PdfFileReader = PdfFileReader(f_in)
-                acroform_ref: PhIndirectObject = reader.root.get("/AcroForm")
-                sig_field: str | None = None
-                field_count: int = 0
+            pdf_stream.seek(0)
+            writer: IncrementalPdfFileWriter = IncrementalPdfFileWriter(input_stream=pdf_stream,
+                                                                        strict=False)
+            # Use PdfFileReader to inspect fields
+            reader: PdfFileReader = PdfFileReader(pdf_stream)
+            acroform_ref: PhIndirectObject = reader.root.get("/AcroForm")
+            sig_field: str | None = None
+            field_count: int = 0
 
-                if acroform_ref:
-                    # dereference IndirectObject
-                    acroform: PhDictionaryObject = acroform_ref.get_object()
-                    fields_array: PhArrayObject = acroform.get("/Fields") or []
-                    for field_ref in fields_array:
-                        field_obj: PhDictionaryObject = field_ref.get_object()
-                        field_type: PhNameObject = field_obj.get("/FT")
-                        if field_type == "/Sig":
-                            field_count += 1
-                            field_value: PhIndirectObject = field_obj.get("/V")
-                            if sig_field is None and field_value is None:
-                                # use existing unused field
-                                sig_field = field_obj.get("/T")
-                if sig_field:
-                    # no need to create a new field
-                    new_field_spec = None
-                else:
-                    # obtain the last page index
-                    if page_num == -1:
-                        temp_reader: PdfReader = PdfReader(stream=f_in)
-                        page_num = len(temp_reader.pages) - 1
-                        del temp_reader
-                    # create a new field
-                    sig_field = f"Signature{field_count + 1}"
-                    new_field_spec = SigFieldSpec(sig_field_name=sig_field,
-                                                  box=box,
-                                                  on_page=page_num)
-                # create signature metadata
-                sig_metadata: PdfSignatureMetadata = PdfSignatureMetadata(field_name=sig_field,
-                                                                          reason=reason,
-                                                                          location=location)
-                # create PdfSigner
-                pdf_signer: PdfSigner = PdfSigner(signature_meta=sig_metadata,
-                                                  signer=simple_signer,
-                                                  timestamper=timestamper,
-                                                  stamp_style=stamp_style,
-                                                  new_field_spec=new_field_spec)
-                try:
-                    output_buf = pdf_signer.sign_pdf(pdf_out=writer)
-                except Exception as e:
-                    exc_err: str = exc_format(exc=e,
-                                              exc_info=sys.exc_info())
-                    if CryptoPdf.logger:
-                        CryptoPdf.logger.error(msg=exc_err)
-                    if isinstance(errors, list):
-                        errors.append(exc_err)
+            if acroform_ref:
+                # dereference IndirectObject
+                acroform: PhDictionaryObject = acroform_ref.get_object()
+                fields_array: PhArrayObject = acroform.get("/Fields") or []
+                for field_ref in fields_array:
+                    field_obj: PhDictionaryObject = field_ref.get_object()
+                    field_type: PhNameObject = field_obj.get("/FT")
+                    if field_type == "/Sig":
+                        field_count += 1
+                        field_value: PhIndirectObject = field_obj.get("/V")
+                        if sig_field is None and field_value is None:
+                            # use existing unused field
+                            sig_field = field_obj.get("/T")
+            if sig_field:
+                # no need to create a new field
+                new_field_spec = None
+            else:
+                # obtain the last page index
+                if page_num == -1:
+                    save_pos: int = pdf_stream.tell()
+                    pdf_stream.seek(0)
+                    temp_reader: PdfReader = PdfReader(stream=pdf_stream)
+                    page_num = len(temp_reader.pages) - 1
+                    del temp_reader
+                    pdf_stream.seek(save_pos)
+                # create a new field
+                sig_field = f"Signature{field_count + 1}"
+                new_field_spec = SigFieldSpec(sig_field_name=sig_field,
+                                              box=box,
+                                              on_page=page_num)
+            # create signature metadata
+            sig_metadata: PdfSignatureMetadata = PdfSignatureMetadata(field_name=sig_field,
+                                                                      reason=reason,
+                                                                      location=location)
+            # create PdfSigner
+            pdf_signer: PdfSigner = PdfSigner(signature_meta=sig_metadata,
+                                              signer=simple_signer,
+                                              timestamper=timestamper,
+                                              stamp_style=stamp_style,
+                                              new_field_spec=new_field_spec)
+            try:
+                output_buf = pdf_signer.sign_pdf(pdf_out=writer)
+            except Exception as e:
+                exc_err: str = exc_format(exc=e,
+                                          exc_info=sys.exc_info())
+                if CryptoPdf.logger:
+                    CryptoPdf.logger.error(msg=exc_err)
+                if isinstance(errors, list):
+                    errors.append(exc_err)
 
             # write the signed PDF
             if output_buf and pdf_out:

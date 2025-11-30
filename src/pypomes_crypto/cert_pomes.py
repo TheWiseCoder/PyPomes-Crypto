@@ -7,29 +7,30 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
+from cryptography.hazmat.primitives.serialization import (
+    BestAvailableEncryption, NoEncryption, KeySerializationEncryption, Encoding, PrivateFormat
+)
+from cryptography.hazmat.primitives.serialization.pkcs12 import serialize_key_and_certificates
 from cryptography.x509.ocsp import OCSPRequestBuilder, load_der_ocsp_response
 from cryptography.x509.oid import NameOID
 from datetime import UTC, datetime, timedelta
 from logging import Logger
-from OpenSSL import crypto
 from pathlib import Path
 from pypomes_core import exc_format
 from typing import Any, Literal
 
-from .crypto_common import ChpPublicKey
 
-
-def cert_generate(common_name: str,
-                  organization: str,
-                  locality: str,
-                  province: str,
-                  country: str,
-                  valid_from: datetime = None,
-                  valid_for: int = 365,
-                  fmt: Literal["der", "pem", "x509"] = "der") -> (tuple[str, str] |
-                                                                  tuple[bytes, bytes] |
-                                                                  tuple[x509.Certificate, RSAPrivateKey]):
+def cert_make_certificate(common_name: str,
+                          organization: str,
+                          locality: str,
+                          province: str,
+                          country: str,
+                          valid_from: datetime = None,
+                          valid_for: int = 365,
+                          fmt: Literal["der", "pem", "x509"] = "der") -> (tuple[str, str] |
+                                                                          tuple[bytes, bytes] |
+                                                                          tuple[x509.Certificate, RSAPrivateKey]):
     """
     Generate a self-signed x509 digital certificate/private key set.
 
@@ -44,9 +45,9 @@ def cert_generate(common_name: str,
     :param province: the reference province, typically the name of a state or province
     :param country: the two-letter *Country Code Top-Level Domain* (ccTLD)
     :param valid_from: the certificate's validation start (defaults to now)
-    :param valid_for: the certificate's validity period, in days (defaults to one year)
+    :param valid_for: the certificate's validation period, in days (defaults to one year)
     :param fmt: the output format to use for the certificate and private key (defaults to *der*)
-    :return: a self-signed x509 digital certificate, along with its private key
+    :return: a self-signed x509 digital certificate, along with the corresponding private key
     """
     # generate RSA private key
     private_key: RSAPrivateKey = rsa.generate_private_key(public_exponent=65537,
@@ -99,75 +100,104 @@ def cert_generate(common_name: str,
     return result
 
 
-def cert_get_trusted(fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x509.Certificate]:
+def cert_make_pfx(common_name: str,
+                  organization: str,
+                  locality: str,
+                  province: str,
+                  country: str,
+                  valid_from: datetime = None,
+                  valid_for: int = 365,
+                  pfx_filepath: Path | str = None,
+                  pfx_password: str | bytes = None,
+                  friendly_name: str | bytes = None,
+                  cert_set: list[x509.Certificate] = None) -> bytes:
     """
-    Retrieve the certificates in the trusted store of the host OS.
+    Generate a PFX (PKCS#12) file by way of a self-signed x509 digital certificate/private key set.
 
-    The return format of the individual certificates is specified in *fmt*:
-        - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
-        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
-        - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
+    If specified, *pfx_filepath* must contain a valid filepath. If provided without a file extension,
+    the latter is set to *.pfx". If the file already exists, it will be overwritten.
 
-    :param fmt: the output format to use for the individual certificates (defaults to *der*)
-    :return: the list of certificates in the trusted store of the host OS
+    :param common_name: the certificates's common name, typically the holder's identification
+    :param organization: the reference organization
+    :param locality: the reference locality, typically the name of a city
+    :param province: the reference province, typically the name of a state or province
+    :param country: the two-letter *Country Code Top-Level Domain* (ccTLD)
+    :param valid_from: the certificate's validation start (defaults to now)
+    :param valid_for: the certificate's validation period, in days (defaults to one year)
+    :param pfx_filepath: optional path to output the *.pfx* file (no file written, if not provided)
+    :param pfx_password: optional password for the *.pfx* file (file not encrypted, if not provided)
+    :param friendly_name: optional friendly name for the certificate in the *.pfx* file
+    :param cert_set: optional set of certificates to include in the *.pfx* file
+    :return: the *.pfx* file bytes
     """
-    # initialize the return variable
-    result: list[str | bytes | x509.Certificate] = []
+    # obtain a self-signed certificate and its corresponding private key
+    pkcs7_data: tuple[x509.Certificate, RSAPrivateKey] = cert_make_certificate(common_name=common_name,
+                                                                               organization=organization,
+                                                                               locality=locality,
+                                                                               province=province,
+                                                                               country=country,
+                                                                               valid_from=valid_from,
+                                                                               valid_for=valid_for,
+                                                                               fmt="x509")
+    certificate: x509.Certificate = pkcs7_data[0]
+    private_key: RSAPrivateKey = pkcs7_data[1]
 
-    # read the trusted store
-    ca_path: Path = Path(certifi.where())
-    with ca_path.open("rb") as f:
-        pem_data: bytes = f.read()
+    # obtain and return the PKCS#12 structure
+    return cert_build_pfx(certificate=certificate,
+                          private_key=private_key,
+                          pfx_filepath=pfx_filepath,
+                          pfx_password=pfx_password,
+                          friendly_name=friendly_name,
+                          cert_set=cert_set)
 
-    # iterate on the certificates
-    certs_pem: list[bytes] = pem_data.split(b"-----END CERTIFICATE-----")
-    for cert_pem in certs_pem:
-        cert_pem += b"-----END CERTIFICATE-----"
-        if fmt == "pem":
-            result.append(cert_pem.decode(encoding="utf-8"))
-        else:
-            cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem)
-            if cert_pem == "der":
-                result.append(cert_x509.public_bytes(encoding=Encoding.DER))
-            else:
-                result.append(cert_x509)
+
+def cert_build_pfx(certificate: x509.Certificate,
+                   private_key: RSAPrivateKey,
+                   pfx_filepath: Path | str = None,
+                   pfx_password: str | bytes = None,
+                   friendly_name: str | bytes = None,
+                   cert_set: list[x509.Certificate] = None) -> bytes:
+    """
+    Build a PFX (PKCS#12) file from cryptography's *Certificate* and *RSAPrivateKey* objects.
+
+    If specified, *pfx_filepath* must contain a valid filepath. If provided without a file extension,
+    the latter is set to *.pfx". If the file already exists, it will be overwritten.
+
+    :param certificate: the *cryptography.x509.Certificate* object
+    :param private_key: the *cryptography.hazmat.primitives.asymmetric.rsa.RSAPrivateKey* object
+    :param pfx_filepath: optional path to output the *.pfx* file (no file written, if not provided)
+    :param pfx_password: optional password for the *.pfx* file (file not emcrypted, if not provided)
+    :param friendly_name: optional friendly name for the certificate in the *.pfx* file
+    :param cert_set: optional set of certificates to include in the *.pfx* file
+    :return: The content of the *.pfx* file as bytes
+    """
+    if isinstance(friendly_name, str):
+        friendly_name = friendly_name.encode(encoding="utf-8")
+    encryption: KeySerializationEncryption
+    if pfx_password is None:
+        encryption = NoEncryption()
+    else:
+        if isinstance(pfx_password, str):
+            pfx_password = pfx_password.encode(encoding="utf-8")
+        encryption = BestAvailableEncryption(password=pfx_password)
+
+    result: bytes = serialize_key_and_certificates(name=friendly_name,
+                                                   key=private_key,
+                                                   cert=certificate,
+                                                   cas=cert_set,
+                                                   encryption_algorithm=encryption)
+    # write the PKCS#12 structure to a file
+    if pfx_filepath:
+        # make sure 'pfx_filepath' is a 'Path'
+        pfx_filepath = Path(pfx_filepath)
+        if not pfx_filepath.suffix:
+            pfx_filepath = pfx_filepath.with_suffix(".pfx")
+        # write the file
+        with pfx_filepath.open("wb") as f:
+            f.write(result)
 
     return result
 
-
-def cert_to_pfx(certificate: x509.Certificate,
-                private_key: RSAPrivateKey,
-                pfx_password: str | bytes = None,
-                friendly_name: str = None) -> bytes:
-    """
-    Generate a PFX (PKCS#12) file from cryptography's *Certificate* and *RSAPrivateKey* objects.
-
-    :param certificate: the cryptography.x509.Certificate object
-    :param private_key: the cryptography.hazmat.primitives.asymmetric.rsa.RSAPrivateKey object
-    :param pfx_password: optional password for the PFX file
-    :param friendly_name: optional friendly name for the certificate in the PFX file.
-    :return: Tte PFX file content as bytes
-    """
-    # serialize the cryptography objects to PEM format
-    cert_pem = certificate.public_bytes(Encoding.PEM)
-    private_key_pem: bytes = private_key.private_bytes(encoding=Encoding.PEM,
-                                                       format=PrivateFormat.PKCS8,
-                                                       encryption_algorithm=NoEncryption())
-    # Load the PEM data into pyOpenSSL objects
-    pyopenssl_cert = crypto.load_certificate(crypto.FILETYPE_PEM, cert_pem)
-    pyopenssl_private_key = crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_pem)
-
-    # Create the PKCS12 object
-    pfx = crypto.PKCS12()
-    pfx.set_certificate(pyopenssl_cert)
-    pfx.set_privatekey(pyopenssl_private_key)
-
-    if friendly_name:
-        pfx.set_friendlyname(friendly_name.encode('utf-8'))
-
-    # Export the PFX
-    pfx_data = pfx.export(passphrase=pfx_password.encode('utf-8') if pfx_password else None)
-    return pfx_data
 
 def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
                       fmt: Literal["der", "pem"] = "der") -> str | bytes:
@@ -179,10 +209,10 @@ def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
         - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
         - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
 
-    *PEM* is a text format with clear delimiters ('-----BEGIN CERTIFICATE-----' and '-----END CERTIFICATE-----'),
+    *PEM* is a text format with delimiters (*-----BEGIN CERTIFICATE-----* and *-----END CERTIFICATE-----*),
     whereas *DER* is a binary format having no delimiters. When bundling multiple *DER* certificates into a
     single byte string, a way to delimit them for later unbundling is therefore needed. The approach used
-    here is to prefix each certificate with its length in a fixed-size header.
+    here is to prefix each certificate with a fixed-size header holding its length.
 
     The output format of the bundle is given by *fmt*:
         - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
@@ -227,10 +257,10 @@ def cert_unbundle_certs(certs: str | bytes,
         - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
         - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
 
-    *PEM* is a text format with clear delimiters ('-----BEGIN CERTIFICATE-----' and '-----END CERTIFICATE-----'),
+    *PEM* is a text format with delimiters (*-----BEGIN CERTIFICATE-----* and *-----END CERTIFICATE-----*),
     whereas *DER* is a binary format having no delimiters. When bundling multiple *DER* certificates into a
-    single byte string, a way to delimit them for later unbundling is therefore needed. The approach used
-    here was to prefix each certificate with its length in a fixed-size header.
+    single byte string, a way to delimit them for later unbundling was therefore needed. The approach expected
+    here is to have each certificate prefixed with a fixed-size header holding its length.
 
     The return format of the individual certificates is specified in *fmt*:
         - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
@@ -277,6 +307,42 @@ def cert_unbundle_certs(certs: str | bytes,
                     result.append(cert_x509.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8"))
                 else:
                     result.append(cert_x509)
+    return result
+
+
+def cert_get_trusted(fmt: Literal["der", "pem", "x509"]) -> list[str | bytes | x509.Certificate]:
+    """
+    Retrieve the certificates in the trusted store of the host OS.
+
+    The return format of the individual certificates is specified in *fmt*:
+        - *der*: *Distinguished Encoding Rules*, binary as *bytes* (the default)
+        - *pem*: *Privacy-Enhanced Mail*, text-based as *str*
+        - *x509*: *cryptography.x509.Certificate*, object as non-serialized binary
+
+    :param fmt: the output format to use for the individual certificates (defaults to *der*)
+    :return: the list of certificates in the trusted store of the host OS
+    """
+    # initialize the return variable
+    result: list[str | bytes | x509.Certificate] = []
+
+    # read the trusted store
+    ca_path: Path = Path(certifi.where())
+    with ca_path.open("rb") as f:
+        pem_data: bytes = f.read()
+
+    # iterate on the certificates
+    certs_pem: list[bytes] = pem_data.split(b"-----END CERTIFICATE-----")
+    for cert_pem in certs_pem:
+        cert_pem += b"-----END CERTIFICATE-----"
+        if fmt == "pem":
+            result.append(cert_pem.decode(encoding="utf-8"))
+        else:
+            cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem)
+            if cert_pem == "der":
+                result.append(cert_x509.public_bytes(encoding=Encoding.DER))
+            else:
+                result.append(cert_x509)
+
     return result
 
 
@@ -368,7 +434,7 @@ def cert_verify_signature(cert: x509.Certificate,
     result: bool = False
 
     # retrieve the certificate's public key
-    public_key: ChpPublicKey = issuer.public_key()
+    public_key: PublicKeyTypes = issuer.public_key()
 
     # verify the signature
     try:

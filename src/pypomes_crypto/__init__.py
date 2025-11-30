@@ -1,6 +1,6 @@
 from .cert_pomes import (
-    cert_generate, cert_get_trusted,
-    cert_bundle_certs, cert_unbundle_certs,
+    cert_make_certificate, cert_make_pfx, cert_build_pfx,
+    cert_get_trusted, cert_bundle_certs, cert_unbundle_certs,
     cert_verify_chain, cert_verify_signature, cert_verify_revocation
 )
 from .crypto_aes import (
@@ -31,8 +31,8 @@ from .jwt_pomes import (
 
 __all__ = [
     # cert_pomes
-    "cert_generate", "cert_get_trusted",
-    "cert_bundle_certs", "cert_unbundle_certs",
+    "cert_make_certificate", "cert_make_pfx", "cert_build_pfx",
+    "cert_get_trusted", "cert_bundle_certs", "cert_unbundle_certs",
     "cert_verify_chain", "cert_verify_signature", "cert_verify_revocation",
     # crypto_aes
     "SymmetricMode",

@@ -1,5 +1,4 @@
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed25519, ed448, rsa, x25519, x448
 from enum import StrEnum, auto
 from logging import Logger
 from pypomes_core import env_get_enum, APP_PREFIX
@@ -44,9 +43,6 @@ class HashAlgorithm(StrEnum):
 
 
 ChpHash = hashes.SHA224 | hashes.SHA256 | hashes.SHA384 | hashes.SHA512
-
-ChpPublicKey = (dsa.DSAPublicKey | rsa.RSAPublicKey | ec.EllipticCurvePublicKey |
-                ed25519.Ed25519PublicKey | ed448.Ed448PublicKey | x25519.X25519PublicKey | x448.X448PublicKey)
 
 CRYPTO_DEFAULT_HASH_ALGORITHM: Final[HashAlgorithm] = \
     env_get_enum(key=f"{APP_PREFIX}_CRYPTO_DEFAULT_HASH_ALGORITHM",

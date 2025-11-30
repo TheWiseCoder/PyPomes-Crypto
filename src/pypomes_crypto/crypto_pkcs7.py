@@ -6,12 +6,13 @@ from datetime import datetime
 from dataclasses import dataclass
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives.serialization.pkcs7 import PKCS7Options, PKCS7SignatureBuilder
 from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
+from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from logging import Logger
 from pathlib import Path
 from pypomes_core import file_get_data, exc_format
@@ -19,7 +20,7 @@ from typing import Any, Literal
 
 from .crypto_common import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
-    SignatureMode, HashAlgorithm, ChpHash, ChpPublicKey, _chp_hash
+    SignatureMode, HashAlgorithm, ChpHash, _chp_hash
 )
 
 
@@ -48,7 +49,7 @@ class CryptoPkcs7:
         signature: bytes                    # the digital signature
         signature_algorithm: str            # the algorithm used to generate the signature
         signature_timestamp: datetime       # the signature's timestamp
-        public_key: ChpPublicKey            # the public key (most likely, RSAPublicKey)
+        public_key: PublicKeyTypes          # the public key (most likely, RSAPublicKey)
         signer_common_name: str             # the name of the certificate's signer
         signer_cert: x509.Certificate       # the reference certificate (latest one in the chain)
         cert_serial_number: int             # the certificate's serial nmumber
@@ -189,7 +190,7 @@ class CryptoPkcs7:
 
                 # extract public key serial number
                 signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_chain[0])
-                public_key: ChpPublicKey = signer_cert.public_key()
+                public_key: PublicKeyTypes = signer_cert.public_key()
                 cert_serial_number: int = signer_cert.serial_number
 
                 # identify the signer
@@ -436,7 +437,7 @@ class CryptoPkcs7:
     @staticmethod
     def create(doc_data: Path | str | bytes,
                pfx_data: Path | str | bytes,
-               pfx_pwd: RSAPrivateKey | str | bytes,
+               pfx_pwd: str | bytes = None,
                p7s_out: Path | str = None,
                hash_alg: HashAlgorithm = CRYPTO_DEFAULT_HASH_ALGORITHM,
                sig_mode: SignatureMode = SignatureMode.DETACHED,
@@ -455,12 +456,12 @@ class CryptoPkcs7:
 
         :param doc_data: the document to sign
         :param pfx_data: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
-        :param pfx_pwd: password for the *.pfx* data
+        :param pfx_pwd: password for the *.pfx* data (if not provided, *pfx_data* is assumed to be unencrypted)
         :param p7s_out: path to the output PKCS#7 file (optional, no output if not provided)
         :param hash_alg: the algorithm for hashing
-        :param sig_mode: whether to handle the payload as "attached"(defaults to "detached")
+        :param sig_mode: whether to handle the payload as "attached" (defaults to "detached")
         :param errors: incidental errors (may be non-empty)
-        :return: the corresponding instance of *CryptoPkcs7*, or *None* if error
+        :return: the instance of *CryptoPkcs7*, or *None* if error
         """
         # initialize the return variable
         result: CryptoPkcs7 | None = None
@@ -478,53 +479,47 @@ class CryptoPkcs7:
                                                      password=pwd_bytes)
         private_key: PrivateKeyTypes = cert_data[0]
         cert_main: x509.Certificate = cert_data[1]
-        additional_certs: list[x509.Certificate] = cert_data[2] or []
+        sig_hasher: ChpHash = _chp_hash(alg=hash_alg,
+                                        errors=curr_errors)
 
-        if cert_main and private_key:
+        if cert_main and private_key and sig_hasher:
+            additional_certs: list[x509.Certificate] = cert_data[2] or []
+
             # prepare the PKCS#7 builder
-            sig_hasher: ChpHash = _chp_hash(alg=hash_alg,
-                                            errors=errors)
-            if sig_hasher:
-                builder: PKCS7SignatureBuilder = PKCS7SignatureBuilder()
-                builder = builder.set_data(data=doc_bytes)
-                builder = builder.add_signer(certificate=cert_main,
-                                             private_key=private_key,
-                                             hash_algorithm=sig_hasher)
+            builder: PKCS7SignatureBuilder = PKCS7SignatureBuilder(data=doc_bytes)
+            builder = builder.add_signer(certificate=cert_main,
+                                         private_key=private_key,
+                                         hash_algorithm=sig_hasher)
+            # add full certificate chain to the return data
+            for cert in additional_certs:
+                builder = builder.add_certificate(cert)
 
-                # add full certificate chain to the return data
-                for cert in additional_certs:
-                    builder = builder.add_certificate(cert)
+            # define PKCS#7 options
+            options: list[PKCS7Options] = [PKCS7Options.Binary]
+            if sig_mode == SignatureMode.DETACHED:
+                options.append(PKCS7Options.DetachedSignature)
 
-                # define PKCS#7 options
-                options: list[PKCS7Options] = [PKCS7Options.Binary]
-                if sig_mode == SignatureMode.DETACHED:
-                    options.append(PKCS7Options.DetachedSignature)
+            # build the PKCS#7 data in DER format
+            pkcs7_data: bytes = builder.sign(encoding=Encoding.DER,
+                                             options=options)
+            # instantiate the object
+            result = CryptoPkcs7(p7s_data=pkcs7_data,
+                                 doc_data=doc_bytes if sig_mode == SignatureMode.DETACHED else None,
+                                 errors=curr_errors)
 
-                # build the PKCS#7 data in DER format
-                pkcs7_data: bytes = builder.sign(encoding=Encoding.DER,
-                                                 options=options)
-                # instantiate the object
-                if sig_mode == SignatureMode.ATTACHED:
-                    result = CryptoPkcs7(p7s_data=pkcs7_data,
-                                         errors=curr_errors)
-                else:
-                    result = CryptoPkcs7(p7s_data=pkcs7_data,
-                                         doc_data=doc_bytes,
-                                         errors=curr_errors)
-                # output the PKCS#7 file
-                if not curr_errors and p7s_out:
-                    # make sure 'p7s_out' is a 'Path'
-                    p7s_out = Path(p7s_out)
-                    # write the PKCS#7 data to a file
-                    with p7s_out.open("wb") as out_f:
-                        out_f.write(pkcs7_data)
-        elif cert_main:
-            msg = "Failed to load the private key"
-            if CryptoPkcs7.logger:
-                CryptoPkcs7.logger.error(msg=msg)
-            curr_errors.append(msg)
-        else:
-            msg = "Failed to load the digital certificate"
+            # output the PKCS#7 file
+            if not curr_errors and p7s_out:
+                # make sure 'p7s_out' is a 'Path'
+                p7s_out = Path(p7s_out)
+                # write the PKCS#7 data to a file
+                with p7s_out.open("wb") as out_f:
+                    out_f.write(pkcs7_data)
+
+        elif not curr_errors:
+            if not cert_main:
+                msg: str = "Failed to load the digital certificate"
+            else:
+                msg: str = "Failed to load the private key"
             if CryptoPkcs7.logger:
                 CryptoPkcs7.logger.error(msg=msg)
             curr_errors.append(msg)

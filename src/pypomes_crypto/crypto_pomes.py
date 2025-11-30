@@ -11,6 +11,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
+from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from io import BytesIO
 from logging import Logger
@@ -26,7 +27,7 @@ from pypomes_core import file_get_data, exc_format
 
 from .crypto_common import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
-    HashAlgorithm, ChpPublicKey, ChpHash, _chp_hash
+    HashAlgorithm, ChpHash, _chp_hash
 )
 
 
@@ -348,7 +349,7 @@ def crypto_verify_p7s(p7s_data: Path | str | bytes,
 
             # extract the public key
             signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=signer_cert_bytes)
-            public_key: ChpPublicKey = signer_cert.public_key()
+            public_key: PublicKeyTypes = signer_cert.public_key()
 
             # extract the payload hash
             stored_hash: bytes | None = None
@@ -458,37 +459,47 @@ def crypto_verify_pdf(pdf_data: Path | str | bytes,
     # obtain the list of digital signatures
     signatures: list[EmbeddedPdfSignature] = pdf_reader.embedded_signatures
 
+    err_msg: str | None = None
     if signatures:
         # traverse the signatures
         result = True
         for signature in signatures:
             msg: str | None = None
-            status: PdfSignatureStatus = validate_pdf_signature(embedded_sig=signature,
-                                                                signer_validation_context=validation_context)
-            if status.revoked:
-                msg = "The certificate used has been revoked"
-            elif not status.intact:
-                msg = "The signature block is not intact"
-            elif not status.trusted and certs:
-                msg = "The certificate used is not trusted"
-            elif not status.seed_value_ok:
-                msg = "A bad seed value found"
-            elif not status.valid:
-                msg = "The digital signature is not valid"
+            try:
+                status: PdfSignatureStatus = validate_pdf_signature(embedded_sig=signature,
+                                                                    signer_validation_context=validation_context)
+                if status.revoked:
+                    msg = "The certificate used has been revoked"
+                elif not status.intact:
+                    msg = "The signature block is not intact"
+                elif not status.trusted:
+                    msg = "The certificate used is not trusted"
+                elif not status.seed_value_ok:
+                    msg = "A bad seed value found"
+                elif not status.valid:
+                    msg = "The digital signature is not valid"
 
-            if msg:
-                # an error has been flagged, report it
-                if logger:
-                    logger.warning(msg=msg)
-                result = False
+                if msg:
+                    # an error has been flagged, report it
+                    if logger:
+                        logger.warning(msg=msg)
+                    result = False
+                    break
+
+            except Exception as e:
+                result = None
+                err_msg = exc_format(exc=e,
+                                     exc_info=sys.exc_info())
                 break
     else:
         # signatures not retrieved, report the problem
-        msg: str = "The file is not digitally signed"
+        err_msg: str = "The file is not digitally signed"
+
+    if err_msg:
         if logger:
-            logger.error(msg=msg)
+            logger.error(msg=err_msg)
         if isinstance(errors, list):
-            errors.append(msg)
+            errors.append(err_msg)
 
     if result and logger:
         logger.debug(msg="Signature verification successful")
