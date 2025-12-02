@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pypomes_crypto"
-version = "0.7.2"
+version = "0.7.7"
 authors = [
   { name="GT Nunes", email="wisecoder01@gmail.com" }
 ]
@@ -27,7 +27,7 @@ dependencies = [
     "pyHanko>=0.32.0",
     "PyJWT>=2.10.1",
 	"PyPDF2>=3.0.1",
-    "pypomes_core>=2.8.7",
+    "pypomes_core>=2.8.8",
     "requests>=2.32.5"
 ]
 

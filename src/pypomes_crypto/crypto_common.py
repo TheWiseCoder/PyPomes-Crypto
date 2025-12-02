@@ -5,23 +5,6 @@ from pypomes_core import env_get_enum, APP_PREFIX
 from typing import Final
 
 
-class SignatureMode(StrEnum):
-    """
-    Location of signatures with respect to the signed files.
-    """
-    ATTACHED = auto()
-    DETACHED = auto()
-
-
-class SignatureType(StrEnum):
-    """
-    Types of cryptographic signatures in documents.
-    """
-    CADES = "CAdES"
-    PADES = "PAdES"
-    XADES = "XAdES"
-
-
 class HashAlgorithm(StrEnum):
     """
     Supported hash algorithms.
@@ -40,6 +23,15 @@ class HashAlgorithm(StrEnum):
     SHA3_512 = auto()
     SHAKE_128 = auto()
     SHAKE_256 = auto()
+
+
+class SignatureType(StrEnum):
+    """
+    Types of cryptographic signatures in documents.
+    """
+    ATTACHED = auto()
+    DETACHED = auto()
+    PADES = auto()
 
 
 ChpHash = hashes.SHA224 | hashes.SHA256 | hashes.SHA384 | hashes.SHA512

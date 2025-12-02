@@ -1,7 +1,6 @@
 import sys
 import certifi
 import requests
-import struct
 from contextlib import suppress
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
@@ -226,24 +225,34 @@ def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
     result: str | bytes = "" if fmt == "pem" else b""
 
     for cert in certs:
+        cert_der: bytes | None = None
+        cert_pem: str | None = None
         if isinstance(cert, x509.Certificate):
             # 'cert' is a certificate object
-            if fmt == "pem":
-                result += cert.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8")
+            if fmt == "der":
+                cert_der: bytes = cert.public_bytes(encoding=Encoding.DER)
             else:
-                cert_der = cert.public_bytes(encoding=Encoding.DER)
-                result += struct.pack(">I", len(cert_der)) + cert_der
+                cert_pem = cert.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8")
         elif isinstance(cert, str):
             # 'cert' is PEM-encoded
-            if fmt == "pem":
-                result += cert
+            if fmt == "der":
+                cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert.encode(encoding="utf-8"))
+                cert_der = cert_x509.public_bytes(encoding=Encoding.DER)
             else:
-                result += cert.encode(encoding="utf-8")
-        # 'cert' is DER-encoded
-        elif fmt == "pem":
-            result += (struct.pack(">I", len(cert)) + cert).decode(encoding="utf-8")
+                cert_pem = cert
+        elif isinstance(cert, bytes):
+            # 'cert' is DER-encoded
+            if fmt == "der":
+                cert_der = cert
+            else:
+                cert_x509: x509.Certificate = x509.load_der_x509_certificate(data=cert)
+                cert_pem = cert_x509.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8")
+
+        if fmt == "der":
+            result += len(cert_der).to_bytes(length=4,
+                                             byteorder="big") + cert_der
         else:
-            result += struct.pack(">I", len(cert)) + cert
+            result += cert_pem
 
     return result
 
@@ -283,8 +292,8 @@ def cert_unbundle_certs(certs: str | bytes,
             if fmt == "pem":
                 result.append(cert_pem)
             else:
-                cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem.encode("utf-8"))
-                if cert_pem == "der":
+                cert_x509: x509.Certificate = x509.load_pem_x509_certificate(data=cert_pem.encode(encoding="utf-8"))
+                if fmt == "der":
                     result.append(cert_x509.public_bytes(encoding=Encoding.DER))
                 else:
                     result.append(cert_x509)
@@ -293,7 +302,8 @@ def cert_unbundle_certs(certs: str | bytes,
         offset: int = 0
         while offset < len(certs):
             # obtain the certificate length as encoded in the 4-byte header
-            length: int = struct.unpack(">I", certs[offset:offset+4])[0]
+            length: int = int.from_bytes(bytes=certs[offset:offset+4],
+                                         byteorder="big")
             offset += 4
             # extract the certificate bytes
             cert_der: bytes = certs[offset:offset+length]

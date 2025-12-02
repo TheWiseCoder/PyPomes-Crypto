@@ -5,14 +5,12 @@ from asn1crypto import cms, core, pem, tsp, x509 as asn1crypto_x509
 from datetime import datetime
 from dataclasses import dataclass
 from cryptography import x509
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from cryptography.hazmat.primitives.serialization.pkcs7 import PKCS7Options, PKCS7SignatureBuilder
-from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, pkcs7, pkcs12
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
+from io import BytesIO
 from logging import Logger
 from pathlib import Path
 from pypomes_core import file_get_data, exc_format
@@ -20,7 +18,7 @@ from typing import Any, Literal
 
 from .crypto_common import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
-    SignatureMode, HashAlgorithm, ChpHash, _chp_hash
+    HashAlgorithm, SignatureType, ChpHash, _chp_hash
 )
 
 
@@ -61,24 +59,25 @@ class CryptoPkcs7:
         tsa_serial_number: str              # the timestamping's serial number
 
     def __init__(self,
-                 p7s_data: Path | str | bytes,
-                 doc_data: Path | str | bytes = None,
+                 p7s_in: BytesIO | Path | str | bytes,
+                 doc_in: BytesIO | Path | str | bytes = None,
                  errors: list[str] = None) -> None:
         """
         Instantiate the *CryptoPkcs7* class, and extract the relevant crypto data.
 
-        The natures of *p7s_data* and *doc_data* depend on their respective data types:
-          - type *bytes*: holds the data (used as is)
-          - type *str*: holds the data (used as utf8-encoded)
+        The natures of *p7s_in* and *doc_in* depend on their respective data types:
+          - type *BytesIO*: is a byte stream
           - type *Path*: is a path to a file holding the data
+          - type *str*: holds the data (used as utf8-encoded)
+          - type *bytes*: holds the data (used as is)
 
         The PKCS#7 data provided in *p7s_data* contains the A1 certificate and its corresponding
         public key, the certificate chain, the original payload (if *attached* mode), and the
         digital signature. The latter is always validated, and if a payload is specified in
         *doc_data* (*detached* mode), it is validated against its declared hash value.
 
-        :param p7s_data: the PKCS#7 data in *DER* or *PEDM* format
-        :param doc_data: the original document data (the payload, required in detached mode)
+        :param p7s_in: the PKCS#7 data in *DER* or *PEDM* format
+        :param doc_in: the original document data (the payload, required in detached mode)
         :param errors: incidental errors
         """
         # declare/initialize the instance variables
@@ -87,7 +86,7 @@ class CryptoPkcs7:
         self.p7s_bytes: bytes
 
         # retrieve the PKCS#7 file data (if PEM, convert to DER)
-        self.p7s_bytes = file_get_data(file_data=p7s_data)
+        self.p7s_bytes = file_get_data(file_data=p7s_in)
         if pem.detect(self.p7s_bytes):
             _, _, self.p7s_bytes = pem.unarmor(pem_bytes=self.p7s_bytes)
 
@@ -118,9 +117,9 @@ class CryptoPkcs7:
             if encap_content:
                 # attached mode
                 self.payload = encap_content.native
-            elif doc_data:
+            elif doc_in:
                 # detached mode
-                self.payload = file_get_data(file_data=doc_data)
+                self.payload = file_get_data(file_data=doc_in)
             if not self.payload:
                 msg = "For detached mode, a payload file must be provided"
                 if CryptoPkcs7.logger:
@@ -134,9 +133,9 @@ class CryptoPkcs7:
 
                 # extract the signature and its algorithms
                 signature_bytes: bytes = signer_info["signature"].native
-                signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
-                alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
-                hash_algorithm: HashAlgorithm = HashAlgorithm(alg_name)
+                signature_alg_name: str = signer_info["signature_algorithm"]["algorithm"].native
+                digest_alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
+                hash_algorithm: HashAlgorithm = HashAlgorithm(digest_alg_name)
 
                 stored_hash: bytes | None = None
                 signature_timestamp: datetime | None = None
@@ -230,14 +229,23 @@ class CryptoPkcs7:
 
                 # verify the signature
                 if signed_attrs:
-                    # when 'signed_attrs' exists, the signature covers those attributes, not the raw data
+                    # HAZARD:
+                    #   - when 'signed_attrs' exists, the signature covers its attributes, not the raw data
+                    #   - 'signed_attrs' was sorted in DER canonical order before it was signed
+                    #   - 'signed_attrs' was kept stored in the insert order of its attributes
+                    #   - 'dump()' fails to apply the DER canonical sort to 'signed_attrs'
+                    #   - a manual sort to 'signed_attrs' is thus required, for the verification to succeed
+                    sorted_attrs: list[cms.CMSAttribute] = sorted(signed_attrs,
+                                                                  key=lambda attr: attr.dump())
+                    signed_attrs = cms.CMSAttributes(sorted_attrs)
                     computed_hash = crypto_hash(msg=signed_attrs.dump(),
                                                 alg=hash_algorithm)
+
                 chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
                 try:
-                    if isinstance(public_key, RSAPublicKey):
+                    if isinstance(public_key, rsa.RSAPublicKey):
                         # determine the signature padding used
-                        if "pss" in signature_algorithm:
+                        if "pss" in signature_alg_name:
                             signature_padding: padding.AsymmetricPadding = padding.PSS(
                                 mgf=padding.MGF1(algorithm=chp_hash),
                                 salt_length=padding.PSS.MAX_LENGTH
@@ -264,7 +272,7 @@ class CryptoPkcs7:
                     payload_hash=stored_hash,
                     hash_algorithm=hash_algorithm,
                     signature=signature_bytes,
-                    signature_algorithm=signature_algorithm,
+                    signature_algorithm=signature_alg_name,
                     signature_timestamp=signature_timestamp,
                     public_key=public_key,
                     signer_common_name=signer_common_name,
@@ -360,7 +368,7 @@ class CryptoPkcs7:
     def get_cert_chain(self,
                        sig_seq: int = 0) -> list[bytes]:
         """
-        Retrieve the certificate chain associated with a reference signature, as specified in *sig_seq**.
+        Retrieve the certificate chain associated with a reference signature, as specified in *sig_seq*.
 
         The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
         *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
@@ -435,31 +443,49 @@ class CryptoPkcs7:
         return self.signatures[sig_ordinal]
 
     @staticmethod
-    def create(doc_data: Path | str | bytes,
-               pfx_data: Path | str | bytes,
-               pfx_pwd: str | bytes = None,
-               p7s_out: Path | str = None,
-               hash_alg: HashAlgorithm = CRYPTO_DEFAULT_HASH_ALGORITHM,
-               sig_mode: SignatureMode = SignatureMode.DETACHED,
-               errors: list[str] = None) -> CryptoPkcs7:
+    def sign(doc_in: BytesIO | Path | str | bytes,
+             pfx_in: BytesIO | Path | str | bytes,
+             pfx_pwd: str | bytes = None,
+             p7s_out: BytesIO | Path | str = None,
+             embed_attrs: bool = True,
+             hash_alg: HashAlgorithm = CRYPTO_DEFAULT_HASH_ALGORITHM,
+             sig_type: SignatureType = SignatureType.DETACHED,
+             errors: list[str] = None) -> CryptoPkcs7:
         """
-        Instantiate a *CryptoPkcs7* object by signing a document with a type A1 certificate.
+        Digitally sign a file in *attached* or *detached* format, using an A1 certificate.
 
-        The natures of *doc_data* and *pfx_data* depend on their respective data types:
-          - type *bytes*: holds the data (used as is)
-          - type *str*: holds the data (used as utf8-encoded)
+        The natures of *doc_in* and *pfx_in* depend on their respective data types:
+          - type *BytesIO*: is a byte stream
           - type *Path*: is a path to a file holding the data
+          - type *str*: holds the data (used as utf8-encoded)
+          - type *bytes*: holds the data (used as is)
 
         The signature is created as a PKCS#7/CMS compliant structure with full certificate chain.
         The parameter *sig_mode* determines whether the payload is to be embedded (*attached*),
         or left aside (*detached*).
 
-        :param doc_data: the document to sign
-        :param pfx_data: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
-        :param pfx_pwd: password for the *.pfx* data (if not provided, *pfx_data* is assumed to be unencrypted)
+        The parameter *embed_attrs* determines whether authenticated attributes should be embedded in the
+         PKCS#7 structure (defaults to *True*). These are the attributes grouped under the label "signed_attrs",
+         that are cryptographically signed by the signer, meaning that, when they exist, the signature covers
+         them, rather than the raw data. Besides the ones standardized in *RFC* publications, custom attributes
+         may be created and given *OID* (Object Identifier) codes, to include application-specific metadata.
+         These are some common *signed_attrs*:
+            - *commitment_type_indication*: indicates the type of commitment (e.g., proof of origin)
+            - *content_hint*: provides a hint about the content type or purpose
+            - *content_type*: indicates the type of the signed content (e.g., *data*, *signedData*, *envelopedData*)
+            - *message_digest*: contains the hash (digest) of the content being signed
+            - *signer_location*: specifies the geographic location of the signer
+            - *signing_certificate*: identifies the certificate used for signing
+            - *signing_time: the UTC time at which the signature was generated
+            - *smime_capabilities*": lists the cryptographic capabilities supported by the signer
+
+        :param doc_in: the document to sign
+        :param pfx_in: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
+        :param pfx_pwd: password for the *.pfx* data (if not provided, *pfx_in* is assumed to be unencrypted)
         :param p7s_out: path to the output PKCS#7 file (optional, no output if not provided)
+        :param embed_attrs: whether to embed the authenticated attributes in the PKCS#7 structure (defaults to *True*)
         :param hash_alg: the algorithm for hashing
-        :param sig_mode: whether to handle the payload as "attached" (defaults to "detached")
+        :param sig_type: whether to handle the payload as "attached" (defaults to "detached")
         :param errors: incidental errors (may be non-empty)
         :return: the instance of *CryptoPkcs7*, or *None* if error
         """
@@ -470,13 +496,13 @@ class CryptoPkcs7:
         curr_errors: list[str] = []
 
         # retrieve the document and certificate raw bytes
-        doc_bytes: bytes = file_get_data(file_data=doc_data)
-        pfx_bytes: bytes = file_get_data(file_data=pfx_data)
+        doc_bytes: bytes = file_get_data(file_data=doc_in)
+        pfx_bytes: bytes = file_get_data(file_data=pfx_in)
 
         # load A1 certificate and private key from the raw certificate data
         pwd_bytes = pfx_pwd.encode() if isinstance(pfx_pwd, str) else pfx_pwd
-        cert_data: tuple = load_key_and_certificates(data=pfx_bytes,
-                                                     password=pwd_bytes)
+        cert_data: tuple = pkcs12.load_key_and_certificates(data=pfx_bytes,
+                                                            password=pwd_bytes)
         private_key: PrivateKeyTypes = cert_data[0]
         cert_main: x509.Certificate = cert_data[1]
         sig_hasher: ChpHash = _chp_hash(alg=hash_alg,
@@ -486,34 +512,47 @@ class CryptoPkcs7:
             additional_certs: list[x509.Certificate] = cert_data[2] or []
 
             # prepare the PKCS#7 builder
-            builder: PKCS7SignatureBuilder = PKCS7SignatureBuilder(data=doc_bytes)
+            builder: pkcs7.PKCS7SignatureBuilder = pkcs7.PKCS7SignatureBuilder(data=doc_bytes)
             builder = builder.add_signer(certificate=cert_main,
                                          private_key=private_key,
-                                         hash_algorithm=sig_hasher)
+                                         hash_algorithm=sig_hasher,
+                                         rsa_padding=padding.PKCS1v15())
             # add full certificate chain to the return data
             for cert in additional_certs:
                 builder = builder.add_certificate(cert)
 
-            # define PKCS#7 options
-            options: list[PKCS7Options] = [PKCS7Options.Binary]
-            if sig_mode == SignatureMode.DETACHED:
-                options.append(PKCS7Options.DetachedSignature)
+            # define PKCS#7 options:
+            #   - Binary: do not translate input data into canonical MIME format
+            #   - DetachedSignature: do not embed data in the PKCS7 structure
+            #   - NoAttributes: do not embed authenticated attributes (includes NoCapabilities)
+            #   - NoCapabilities: do not embed SMIME capabilities
+            #   - NoCerts: do not embed signer certificate
+            #   - Text: add text/plain MIME type (requires DetachedSignature and Encoding.SMIME)
+            options: list[pkcs7.PKCS7Options] = [pkcs7.PKCS7Options.Binary]
+            if sig_type == SignatureType.DETACHED:
+                options.append(pkcs7.PKCS7Options.DetachedSignature)
+            if not embed_attrs:
+                options.append(pkcs7.PKCS7Options.NoAttributes)
 
             # build the PKCS#7 data in DER format
             pkcs7_data: bytes = builder.sign(encoding=Encoding.DER,
                                              options=options)
             # instantiate the object
-            result = CryptoPkcs7(p7s_data=pkcs7_data,
-                                 doc_data=doc_bytes if sig_mode == SignatureMode.DETACHED else None,
+            result = CryptoPkcs7(p7s_in=pkcs7_data,
+                                 doc_in=doc_bytes if sig_type == SignatureType.DETACHED else None,
                                  errors=curr_errors)
 
             # output the PKCS#7 file
             if not curr_errors and p7s_out:
-                # make sure 'p7s_out' is a 'Path'
-                p7s_out = Path(p7s_out)
-                # write the PKCS#7 data to a file
-                with p7s_out.open("wb") as out_f:
-                    out_f.write(pkcs7_data)
+                if isinstance(p7s_out, str):
+                    p7s_out = Path(p7s_out)
+                if isinstance(p7s_out, Path):
+                    # write the PKCS#7 data to a file
+                    with p7s_out.open("wb") as out_f:
+                        out_f.write(pkcs7_data)
+                else:  # isinstance(p7s_out, BytesIO)
+                    # stream the PKCS#7 data to a file
+                    p7s_out.write(pkcs7_data)
 
         elif not curr_errors:
             if not cert_main:

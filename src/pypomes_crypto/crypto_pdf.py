@@ -73,21 +73,22 @@ class CryptoPdf:
         tsa_serial_number: str                    # the timestamping's serial number
 
     def __init__(self,
-                 pdf_data: Path | str | bytes,
-                 pdf_pwd: str = None,
+                 doc_in: BytesIO | Path | str | bytes,
+                 doc_pwd: str = None,
                  errors: list[str] = None) -> None:
         """
         Instantiate the *CryptoPdf* class, and extract the relevant crypto data.
 
-        The nature of *pdf_data* depends on its data type:
-          - type *bytes*: *pdf_data* holds the data (used as is)
-          - type *str*: *pdf_data* holds the data (used as utf8-encoded)
-          - type *Path*: *pdf_data* is a path to a file holding the data
+        The nature of *doc_in* depends on its data type:
+          - type *BytesIO*: *doc_in* is a byte stream
+          - type *bytes*: *doc_in* holds the data (used as is)
+          - type *str*: *doc_in* holds the data (used as utf8-encoded)
+          - type *Path*: *doc_in* is a path to a file holding the data
 
-        If *pdf_data* is encrypted, the decryption password must be provided in *pdf_pwd*.
+        If *doc_in* is encrypted, the decryption password must be provided in *doc_pwd*.
 
-        :param pdf_data: a digitally signed, *PAdES* cxonformant, PDF file
-        :param pdf_pwd: optional password for file decryption
+        :param doc_in: a digitally signed, *PAdES* conformant, PDF file
+        :param doc_pwd: optional password for file decryption
         :param errors: incidental errors (may be non-empty)
         """
         # declare/initialize the instance variables
@@ -95,7 +96,7 @@ class CryptoPdf:
         self.pdf_bytes: bytes
 
         # retrieve the PDF data
-        self.pdf_bytes = file_get_data(file_data=pdf_data)
+        self.pdf_bytes = file_get_data(file_data=doc_in)
 
         # define a local errors list
         curr_errors: list[str] = []
@@ -105,7 +106,7 @@ class CryptoPdf:
 
         # retrieve the signature fields
         reader: PdfReader = PdfReader(stream=pdf_stream,
-                                      password=pdf_pwd)
+                                      password=doc_pwd)
         sig_fields: list[Field] = [field for field in reader.get_fields().values()
                                    if field.get("/FT") == "/Sig"] or []
 
@@ -422,33 +423,34 @@ class CryptoPdf:
         CryptoPdf.logger = logger
 
     @staticmethod
-    def create(pdf_in: Path | str | bytes,
-               pfx_data: Path | str | bytes,
-               pfx_pwd: str | bytes = None,
-               pdf_out: Path | str = None,
-               location: str = None,
-               reason: str = None,
-               make_visible: bool = False,
-               page_num: int = 0,
-               box: tuple[int, int, int, int] = (50, 50, 250, 150),
-               tsa_url: str = None,
-               tsa_username: str = None,
-               tsa_password: str = None,
-               errors: list[str] = None) -> CryptoPdf:
+    def sign(doc_in: BytesIO | Path | str | bytes,
+             pfx_in: BytesIO | Path | str | bytes,
+             pfx_pwd: str | bytes = None,
+             doc_out: BytesIO | Path | str = None,
+             location: str = None,
+             reason: str = None,
+             make_visible: bool = False,
+             page_num: int = 0,
+             box: tuple[int, int, int, int] = (50, 50, 250, 150),
+             tsa_url: str = None,
+             tsa_username: str = None,
+             tsa_password: str = None,
+             errors: list[str] = None) -> CryptoPdf:
         """
         Digitally sign a PDF file in *PAdES* format using an A1 certificate.
 
-        The natures of *pdf_in* and *pfx_data* depend on their respective data types:
-          - type *bytes*: holds the data (used as is)
-          - type *str*: holds the data (used as utf8-encoded)
+        The natures of *doc_in* and *pfx_in* depend on their respective data types:
+          - type *BytesIO*: is a byte stream
           - type *Path*: is a path to a file holding the data
+          - type *str*: holds the data (used as utf8-encoded)
+          - type *bytes*: holds the data (used as is)
 
         Supports visible signature appearance, TSA timestamping, and multiple signatures.
 
-        :param pdf_in: input PDF data
-        :param pfx_data: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
-        :param pfx_pwd: password for the *.pfx* data (if not provided, *pfx_data* is assumed to be unencrypted)
-        :param pdf_out: path to output the signed/re-signed PDF file (optional, no output if not provided)
+        :param doc_in: input PDF data
+        :param pfx_in: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
+        :param pfx_pwd: password for the *.pfx* data (if not provided, *pfx_in* is assumed to be unencrypted)
+        :param doc_out: path or stream to output the signed/re-signed PDF file (optional, no output if not provided)
         :param location: location of signing
         :param reason: reason for signing
         :param make_visible: whether to include a visible signature appearance
@@ -463,25 +465,24 @@ class CryptoPdf:
         # initialize the return variable
         result: CryptoPdf | None = None
 
-        # load the signing certificate and key from a PKCS#12 file
+        # instantiate the PyHanko's signer
         is_temp: bool = False
         pwd_bytes = pfx_pwd.encode() if isinstance(pfx_pwd, str) else pfx_pwd
-        if isinstance(pfx_data, str):
-            pfx_data = pfx_data.encode(encoding="utf-8")
-        if isinstance(pfx_data, bytes):
-            # PyHanko's SimpleSigner requires a path to a file
+        # PyHanko's SimpleSigner requires a path to a file
+        if not isinstance(pfx_in, Path):
+            pfx_bytes: bytes = file_get_data(file_data=pfx_in)
             is_temp = True
             with tempfile.NamedTemporaryFile(mode="wb",
                                              delete=False) as tmp:
-                tmp.write(pfx_data)
-                pfx_data = Path(tmp.name)
-        simple_signer: SimpleSigner = SimpleSigner.load_pkcs12(pfx_file=pfx_data,
+                tmp.write(pfx_bytes)
+                pfx_in = Path(tmp.name)
+        simple_signer: SimpleSigner = SimpleSigner.load_pkcs12(pfx_file=pfx_in,
                                                                passphrase=pwd_bytes)
         if is_temp:
-            pfx_data.unlink(missing_ok=True)
+            pfx_in.unlink(missing_ok=True)
 
         if simple_signer:
-            # cconfigure stamp style
+            # configure stamp style
             stamp_style: TextStampStyle | None = None
             if make_visible:
                 stamp_text: str = f"Signed by {simple_signer.subject_name}"
@@ -504,15 +505,15 @@ class CryptoPdf:
                                               timeout=None)
 
             # open PDF file for incremental signing
-            pdf_in = file_get_data(file_data=pdf_in)
-            pdf_stream: BytesIO = BytesIO(initial_bytes=pdf_in)
+            doc_in = file_get_data(file_data=doc_in)
+            pdf_stream: BytesIO = BytesIO(initial_bytes=doc_in)
             output_buf: BytesIO | None = None
 
             pdf_stream.seek(0)
             writer: IncrementalPdfFileWriter = IncrementalPdfFileWriter(input_stream=pdf_stream,
                                                                         strict=False)
             # Use PdfFileReader to inspect fields
-            reader: PdfFileReader = PdfFileReader(pdf_stream)
+            reader: PdfFileReader = PdfFileReader(stream=pdf_stream)
             acroform_ref: PhIndirectObject = reader.root.get("/AcroForm")
             sig_field: str | None = None
             field_count: int = 0
@@ -567,13 +568,19 @@ class CryptoPdf:
                 if isinstance(errors, list):
                     errors.append(exc_err)
 
-            # write the signed PDF
-            if output_buf and pdf_out:
-                # make sure 'pdf_out' is a 'Path'
-                pdf_out = Path(pdf_out)
+            # output the signed PDF file
+            if output_buf and doc_out:
+                output_buf.seek(0)
                 signed_pdf: bytes = output_buf.read()
-                with pdf_out.open("wb") as out_f:
-                    out_f.write(signed_pdf)
+                if isinstance(doc_out, str):
+                    doc_out = Path(doc_out)
+                if isinstance(doc_out, Path):
+                    # write the signed PDF file
+                    with doc_out.open("wb") as out_f:
+                        out_f.write(signed_pdf)
+                else:  # isinstance(doc_out, BytesIO)
+                    # stream the signed PDF file
+                    doc_out.write(signed_pdf)
         else:
             msg: str = "Unable to load PKCS#12 data from 'pfx_data'"
             if CryptoPdf.logger:
