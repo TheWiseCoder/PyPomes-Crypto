@@ -262,28 +262,30 @@ class CryptoPkcs7:
                                           data=computed_hash,
                                           algorithm=Prehashed(chp_hash))
                 except Exception as e:
+                    msg: str = exc_format(exc=e,
+                                          exc_info=sys.exc_info()) + f" signed by {signer_common_name}"
                     if CryptoPkcs7.logger:
-                        msg: str = exc_format(exc=e,
-                                              exc_info=sys.exc_info())
-                        CryptoPkcs7.logger.warning(msg=msg + f" signed by {signer_common_name}")
+                        CryptoPkcs7.logger.warning(msg=msg)
+                    curr_errors.append(msg)
 
-                # build the signature's crypto data and save it
-                sig_info: CryptoPkcs7.SignatureInfo = CryptoPkcs7.SignatureInfo(
-                    payload_hash=stored_hash,
-                    hash_algorithm=hash_algorithm,
-                    signature=signature_bytes,
-                    signature_algorithm=signature_alg_name,
-                    signature_timestamp=signature_timestamp,
-                    public_key=public_key,
-                    signer_common_name=signer_common_name,
-                    signer_cert=signer_cert,
-                    cert_serial_number=cert_serial_number,
-                    cert_chain=cert_chain,
-                    tsa_timestamp=tsa_timestamp,
-                    tsa_policy=tsa_policy,
-                    tsa_serial_number=tsa_serial_number
-                )
-                self.signatures.append(sig_info)
+                if not curr_errors:
+                    # build the signature's crypto data and save it
+                    sig_info: CryptoPkcs7.SignatureInfo = CryptoPkcs7.SignatureInfo(
+                        payload_hash=stored_hash,
+                        hash_algorithm=hash_algorithm,
+                        signature=signature_bytes,
+                        signature_algorithm=signature_alg_name,
+                        signature_timestamp=signature_timestamp,
+                        public_key=public_key,
+                        signer_common_name=signer_common_name,
+                        signer_cert=signer_cert,
+                        cert_serial_number=cert_serial_number,
+                        cert_chain=cert_chain,
+                        tsa_timestamp=tsa_timestamp,
+                        tsa_policy=tsa_policy,
+                        tsa_serial_number=tsa_serial_number
+                    )
+                    self.signatures.append(sig_info)
 
         if curr_errors and isinstance(errors, list):
             errors.extend(curr_errors)
@@ -450,7 +452,7 @@ class CryptoPkcs7:
              embed_attrs: bool = True,
              hash_alg: HashAlgorithm = CRYPTO_DEFAULT_HASH_ALGORITHM,
              sig_type: SignatureType = SignatureType.DETACHED,
-             errors: list[str] = None) -> CryptoPkcs7:
+             errors: list[str] = None) -> CryptoPkcs7 | None:
         """
         Digitally sign a file in *attached* or *detached* format, using an A1 certificate.
 
@@ -465,25 +467,25 @@ class CryptoPkcs7:
         or left aside (*detached*).
 
         The parameter *embed_attrs* determines whether authenticated attributes should be embedded in the
-         PKCS#7 structure (defaults to *True*). These are the attributes grouped under the label "signed_attrs",
-         that are cryptographically signed by the signer, meaning that, when they exist, the signature covers
-         them, rather than the raw data. Besides the ones standardized in *RFC* publications, custom attributes
-         may be created and given *OID* (Object Identifier) codes, to include application-specific metadata.
-         These are some common *signed_attrs*:
+        PKCS#7 structure (defaults to *True*). These are the attributes grouped under the label "signed_attrs"
+        and cryptographically signed by the signer, meaning that, when they exist, the signature covers them,
+        rather than the raw data. Besides the ones standardized in *RFC* publications, custom attributes
+        may be created and given *OID* (Object Identifier) codes, to include application-specific metadata.
+        These are some of the attributes:
             - *commitment_type_indication*: indicates the type of commitment (e.g., proof of origin)
             - *content_hint*: provides a hint about the content type or purpose
             - *content_type*: indicates the type of the signed content (e.g., *data*, *signedData*, *envelopedData*)
-            - *message_digest*: contains the hash (digest) of the content being signed
+            - *message_digest*: contains the digest (usually, a SHA256 hash) of the payload (typically, *doc_in*)
             - *signer_location*: specifies the geographic location of the signer
             - *signing_certificate*: identifies the certificate used for signing
-            - *signing_time: the UTC time at which the signature was generated
-            - *smime_capabilities*": lists the cryptographic capabilities supported by the signer
+            - *signing_time*: the UTC time at which the signature was generated
+            - *smime_capabilities*: lists the cryptographic capabilities supported by the signer
 
         :param doc_in: the document to sign
         :param pfx_in: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
         :param pfx_pwd: password for the *.pfx* data (if not provided, *pfx_in* is assumed to be unencrypted)
         :param p7s_out: path to the output PKCS#7 file (optional, no output if not provided)
-        :param embed_attrs: whether to embed the authenticated attributes in the PKCS#7 structure (defaults to *True*)
+        :param embed_attrs: whether to embed the signed attributes in the PKCS#7 structure (defaults to *True*)
         :param hash_alg: the algorithm for hashing
         :param sig_type: whether to handle the payload as "attached" (defaults to "detached")
         :param errors: incidental errors (may be non-empty)
@@ -538,21 +540,24 @@ class CryptoPkcs7:
             pkcs7_data: bytes = builder.sign(encoding=Encoding.DER,
                                              options=options)
             # instantiate the object
-            result = CryptoPkcs7(p7s_in=pkcs7_data,
-                                 doc_in=doc_bytes if sig_type == SignatureType.DETACHED else None,
-                                 errors=curr_errors)
+            doc_in: bytes = doc_bytes if sig_type == SignatureType.DETACHED else None
+            crypto_pkcs7: CryptoPkcs7 = CryptoPkcs7(p7s_in=pkcs7_data,
+                                                    doc_in=doc_in,
+                                                    errors=curr_errors)
+            if not curr_errors:
+                result = crypto_pkcs7
 
-            # output the PKCS#7 file
-            if not curr_errors and p7s_out:
-                if isinstance(p7s_out, str):
-                    p7s_out = Path(p7s_out)
-                if isinstance(p7s_out, Path):
-                    # write the PKCS#7 data to a file
-                    with p7s_out.open("wb") as out_f:
-                        out_f.write(pkcs7_data)
-                else:  # isinstance(p7s_out, BytesIO)
-                    # stream the PKCS#7 data to a file
-                    p7s_out.write(pkcs7_data)
+                # output the PKCS#7 file
+                if not curr_errors and p7s_out:
+                    if isinstance(p7s_out, str):
+                        p7s_out = Path(p7s_out)
+                    if isinstance(p7s_out, Path):
+                        # write the PKCS#7 data to a file
+                        with p7s_out.open("wb") as out_f:
+                            out_f.write(pkcs7_data)
+                    else:  # isinstance(p7s_out, BytesIO)
+                        # stream the PKCS#7 data to a file
+                        p7s_out.write(pkcs7_data)
 
         elif not curr_errors:
             if not cert_main:
