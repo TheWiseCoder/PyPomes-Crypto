@@ -68,8 +68,8 @@ class CryptoPkcs7:
         The natures of *p7s_in* and *doc_in* depend on their respective data types:
           - type *BytesIO*: is a byte stream
           - type *Path*: is a path to a file holding the data
-          - type *str*: holds the data (used as utf8-encoded)
           - type *bytes*: holds the data (used as is)
+          - type *str*: holds the data (used as utf8-encoded)
 
         The PKCS#7 data provided in *p7s_data* contains the A1 certificate and its corresponding
         public key, the certificate chain, the original payload (if *attached* mode), and the
@@ -126,166 +126,166 @@ class CryptoPkcs7:
                     CryptoPkcs7.logger.error(msg=msg)
                 curr_errors.append(msg)
 
-        if not curr_errors:
-            # traverse the list of signatures
-            signer_infos: list[cms.SignerInfo] = signed_data["signer_infos"]
-            for signer_info in signer_infos:
+        # process the signatures
+        signer_infos: list[cms.SignerInfo] = signed_data["signer_infos"] if not curr_errors else []
+        for signer_info in signer_infos:
 
-                # extract the signature and its algorithms
-                signature_bytes: bytes = signer_info["signature"].native
-                signature_alg_name: str = signer_info["signature_algorithm"]["algorithm"].native
-                digest_alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
-                hash_algorithm: HashAlgorithm = HashAlgorithm(digest_alg_name)
+            # extract the signature and its algorithms
+            signature_bytes: bytes = signer_info["signature"].native
+            signature_alg_name: str = signer_info["signature_algorithm"]["algorithm"].native
+            digest_alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
+            hash_algorithm: HashAlgorithm = HashAlgorithm(digest_alg_name)
 
-                stored_hash: bytes | None = None
-                signature_timestamp: datetime | None = None
-                signed_attrs: cms.CMSAttributes = signer_info["signed_attrs"] or []
-                for signed_attr in signed_attrs:
-                    attr_type: str = signed_attr["type"].native
-                    match attr_type:
-                        case "message_digest":
-                            stored_hash = signed_attr["values"][0].native
-                        case "signing_time":
-                            signature_timestamp = signed_attr["values"][0].native
+            stored_hash: bytes | None = None
+            signature_timestamp: datetime | None = None
+            # ruff: noqa: SIM401 - 'get' is not applicable for 'signer_info'
+            signed_attrs: cms.CMSAttributes = signer_info["signed_attrs"] if "signed_attrs" in signer_info else []
+            for signed_attr in signed_attrs:
+                attr_type: str = signed_attr["type"].native
+                match attr_type:
+                    case "message_digest":
+                        stored_hash = signed_attr["values"][0].native
+                    case "signing_time":
+                        signature_timestamp = signed_attr["values"][0].native
 
-                # obtain/validate the hash
-                from .crypto_pomes import crypto_hash
-                computed_hash: bytes = crypto_hash(msg=self.payload,
-                                                   alg=hash_algorithm)
-                if not stored_hash:
-                    if CryptoPkcs7.logger:
-                        CryptoPkcs7.logger.warning(msg="'p7s_data' has no stored payload digest")
-                    stored_hash = computed_hash
-                elif computed_hash != stored_hash:
-                    msg = "Computed and stored digest values do not match"
-                    if CryptoPkcs7.logger:
-                        CryptoPkcs7.logger.error(msg=msg)
-                    curr_errors.append(msg)
-                    break
+            # obtain/validate the hash
+            from .crypto_pomes import crypto_hash
+            computed_hash: bytes = crypto_hash(msg=self.payload,
+                                               alg=hash_algorithm)
+            if not stored_hash:
+                if CryptoPkcs7.logger:
+                    CryptoPkcs7.logger.warning(msg="'p7s_data' has no stored payload digest")
+                stored_hash = computed_hash
+            elif computed_hash != stored_hash:
+                msg = "Computed and stored digest values do not match"
+                if CryptoPkcs7.logger:
+                    CryptoPkcs7.logger.error(msg=msg)
+                curr_errors.append(msg)
+                break
 
-                # select the correct certificate while building the certificate chain
-                signer_id: cms.SignerIdentifier = signer_info["sid"]
-                signer_cert_bytes: bytes | None = None
-                cert_chain: list[bytes] = []
-                certs: cms.CertificateSet = signed_data["certificates"]
-                for cert_choice in certs:
-                    # HAZARD: 'cert' is not a 'cryptography.x509.Certificate' object
-                    cert: asn1crypto_x509.Certificate = cert_choice.chosen
-                    der_bytes: bytes = cert.dump()
-                    cert_chain.append(der_bytes)
-                    if signer_cert_bytes is None:
-                        if signer_id.name == "issuer_and_serial_number":
-                            # match issuer and serial number
-                            if cert.issuer == signer_id.chosen["issuer"] and \
-                               cert.serial_number == signer_id.chosen["serial_number"].native:
+            # select the correct certificate while building the certificate chain
+            signer_id: cms.SignerIdentifier = signer_info["sid"]
+            signer_cert_bytes: bytes | None = None
+            cert_chain: list[bytes] = []
+            certs: cms.CertificateSet = signed_data["certificates"]
+            for cert_choice in certs:
+                # HAZARD: 'cert' is not a 'cryptography.x509.Certificate' object
+                cert: asn1crypto_x509.Certificate = cert_choice.chosen
+                der_bytes: bytes = cert.dump()
+                cert_chain.append(der_bytes)
+                if signer_cert_bytes is None:
+                    if signer_id.name == "issuer_and_serial_number":
+                        # match issuer and serial number
+                        if cert.issuer == signer_id.chosen["issuer"] and \
+                           cert.serial_number == signer_id.chosen["serial_number"].native:
+                            signer_cert_bytes = der_bytes
+                    elif signer_id.name == "subject_key_identifier":
+                        # extract SKI from certificate extensions
+                        for ext in cert["tbs_certificate"]["extensions"]:
+                            if ext["extn_id"].native == "subject_key_identifier" and \
+                                    ext["extn_value"].native == signer_id.chosen.native:
                                 signer_cert_bytes = der_bytes
-                        elif signer_id.name == "subject_key_identifier":
-                            # extract SKI from certificate extensions
-                            for ext in cert["tbs_certificate"]["extensions"]:
-                                if ext["extn_id"].native == "subject_key_identifier" and \
-                                        ext["extn_value"].native == signer_id.chosen.native:
-                                    signer_cert_bytes = der_bytes
-                                    break
+                                break
 
-                # extract public key serial number
-                signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_chain[0])
-                public_key: PublicKeyTypes = signer_cert.public_key()
-                cert_serial_number: int = signer_cert.serial_number
+            # extract certificates and public key
+            signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=signer_cert_bytes)
+            public_key: PublicKeyTypes = signer_cert.public_key()
+            cert_serial_number: int = signer_cert.serial_number
 
-                # identify the signer
-                subject: x509.name.Name = signer_cert.subject
-                signer_common_name: str = subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
+            # identify the signer
+            subject: x509.name.Name = signer_cert.subject
+            signer_common_name: str = subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value
 
-                # TSA timestamp info (optional)
-                tsa_timestamp: datetime | None = None
-                tsa_policy: str | None = None
-                tsa_serial_number: str | None = None
+            # TSA timestamp info (optional)
+            tsa_timestamp: datetime | None = None
+            tsa_policy: str | None = None
+            tsa_serial_number: str | None = None
 
-                unsigned_attrs: cms.CMSAttributes = signer_info["unsigned_attrs"]
-                for unsigned_attr in unsigned_attrs:
-                    attr_type: str = unsigned_attr["type"].native
-                    if attr_type == "signature_time_stamp_token":
-                        try:
-                            # the timestamp token is a CMS SignedData structure -'dump()' gets the raw DER bytes
-                            values: cms.SetOfContentInfo = unsigned_attr["values"]
-                            timestamp_token: cms.ContentInfo = cms.ContentInfo.load(values[0].dump())
+            unsigned_attrs: cms.CMSAttributes = signer_info["unsigned_attrs"]
+            for unsigned_attr in unsigned_attrs:
+                attr_type: str = unsigned_attr["type"].native
+                if attr_type == "signature_time_stamp_token":
+                    try:
+                        # the timestamp token is a CMS SignedData structure -'dump()' gets the raw DER bytes
+                        values: cms.SetOfContentInfo = unsigned_attr["values"]
+                        timestamp_token: cms.ContentInfo = cms.ContentInfo.load(values[0].dump())
 
-                            # extract the TSTInfo structure
-                            tst_signed_data: cms.SignedData = timestamp_token["content"]
-                            tst_info: tsp.TSTInfo = tst_signed_data["encap_content_info"]["content"].parsed
+                        # extract the TSTInfo structure
+                        tst_signed_data: cms.SignedData = timestamp_token["content"]
+                        tst_info: tsp.TSTInfo = tst_signed_data["encap_content_info"]["content"].parsed
 
-                            # extract TSA timestamp details
-                            tsa_timestamp = tst_info["gen_time"].native
-                            tsa_policy = tst_info["policy"].native
-                            tsa_serial_number = hex(tst_info["serial_number"].native)
+                        # extract TSA timestamp details
+                        tsa_timestamp = tst_info["gen_time"].native
+                        tsa_policy = tst_info["policy"].native
+                        tsa_serial_number = hex(tst_info["serial_number"].native)
 
-                        except Exception as e:
-                            # unable to obtain TAS data: error parsing token
-                            if CryptoPkcs7.logger:
-                                msg: str = exc_format(exc=e,
-                                                      exc_info=sys.exc_info())
-                                CryptoPkcs7.logger.warning(msg=msg)
+                    except Exception as e:
+                        # unable to obtain TAS data: error parsing token
+                        if CryptoPkcs7.logger:
+                            msg: str = exc_format(exc=e,
+                                                  exc_info=sys.exc_info())
+                            CryptoPkcs7.logger.error(msg=msg)
                         break
 
-                # verify the signature
-                if signed_attrs:
-                    # HAZARD:
-                    #   - when 'signed_attrs' exists, the signature covers its attributes, not the raw data
-                    #   - 'signed_attrs' was sorted in DER canonical order before it was signed
-                    #   - 'signed_attrs' was kept stored in the insert order of its attributes
-                    #   - 'dump()' fails to apply the DER canonical sort to 'signed_attrs'
-                    #   - a manual sort to 'signed_attrs' is thus required, for the verification to succeed
-                    sorted_attrs: list[cms.CMSAttribute] = sorted(signed_attrs,
-                                                                  key=lambda attr: attr.dump())
-                    signed_attrs = cms.CMSAttributes(sorted_attrs)
-                    computed_hash = crypto_hash(msg=signed_attrs.dump(),
-                                                alg=hash_algorithm)
+            # verify the signature
+            if signed_attrs:
+                # HAZARD - notes on 'signed_attrs':
+                #   - when it exists, the signature covers its attributes, not the payload
+                #   - it was sorted in DER canonical order before being signed
+                #   - it was kept in storage in the insert order of its attributes
+                #   - 'dump()' fails to sort it in DER canonical order
+                #   - a manual sort is thus required, for the verification to succeed
+                sorted_attrs: list[cms.CMSAttribute] = sorted(signed_attrs,
+                                                              key=lambda attr: attr.dump())
+                signed_attrs = cms.CMSAttributes(sorted_attrs)
+                computed_hash = crypto_hash(msg=signed_attrs.dump(),
+                                            alg=hash_algorithm)
 
-                chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
-                try:
-                    if isinstance(public_key, rsa.RSAPublicKey):
-                        # determine the signature padding used
-                        if "pss" in signature_alg_name:
-                            signature_padding: padding.AsymmetricPadding = padding.PSS(
-                                mgf=padding.MGF1(algorithm=chp_hash),
-                                salt_length=padding.PSS.MAX_LENGTH
-                            )
-                        else:
-                            signature_padding: padding.AsymmetricPadding = padding.PKCS1v15()
-
-                        public_key.verify(signature=signature_bytes,
-                                          data=computed_hash,
-                                          padding=signature_padding,
-                                          algorithm=Prehashed(chp_hash))
+            chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
+            try:
+                if isinstance(public_key, rsa.RSAPublicKey):
+                    # determine the signature padding used
+                    if "pss" in signature_alg_name:
+                        signature_padding: padding.AsymmetricPadding = padding.PSS(
+                            mgf=padding.MGF1(algorithm=chp_hash),
+                            salt_length=padding.PSS.MAX_LENGTH
+                        )
                     else:
-                        public_key.verify(signature=signature_bytes,
-                                          data=computed_hash,
-                                          algorithm=Prehashed(chp_hash))
-                except Exception as e:
-                    msg: str = exc_format(exc=e,
-                                          exc_info=sys.exc_info()) + f" signed by {signer_common_name}"
-                    if CryptoPkcs7.logger:
-                        CryptoPkcs7.logger.warning(msg=msg)
-                    curr_errors.append(msg)
+                        signature_padding: padding.AsymmetricPadding = padding.PKCS1v15()
 
-                if not curr_errors:
-                    # build the signature's crypto data and save it
-                    sig_info: CryptoPkcs7.SignatureInfo = CryptoPkcs7.SignatureInfo(
-                        payload_hash=stored_hash,
-                        hash_algorithm=hash_algorithm,
-                        signature=signature_bytes,
-                        signature_algorithm=signature_alg_name,
-                        signature_timestamp=signature_timestamp,
-                        public_key=public_key,
-                        signer_common_name=signer_common_name,
-                        signer_cert=signer_cert,
-                        cert_serial_number=cert_serial_number,
-                        cert_chain=cert_chain,
-                        tsa_timestamp=tsa_timestamp,
-                        tsa_policy=tsa_policy,
-                        tsa_serial_number=tsa_serial_number
-                    )
-                    self.signatures.append(sig_info)
+                    public_key.verify(signature=signature_bytes,
+                                      data=computed_hash,
+                                      padding=signature_padding,
+                                      algorithm=Prehashed(chp_hash))
+                else:
+                    public_key.verify(signature=signature_bytes,
+                                      data=computed_hash,
+                                      algorithm=Prehashed(chp_hash))
+            except Exception as e:
+                msg: str = exc_format(exc=e,
+                                      exc_info=sys.exc_info()) + f" signed by {signer_common_name}"
+                if CryptoPkcs7.logger:
+                    CryptoPkcs7.logger.warning(msg=msg)
+                curr_errors.append(msg)
+                break
+
+            # build the signature's crypto data and save it
+            sig_info: CryptoPkcs7.SignatureInfo = CryptoPkcs7.SignatureInfo(
+                payload_hash=stored_hash,
+                hash_algorithm=hash_algorithm,
+                signature=signature_bytes,
+                signature_algorithm=signature_alg_name,
+                signature_timestamp=signature_timestamp,
+                public_key=public_key,
+                signer_common_name=signer_common_name,
+                signer_cert=signer_cert,
+                cert_serial_number=cert_serial_number,
+                cert_chain=cert_chain,
+                tsa_timestamp=tsa_timestamp,
+                tsa_policy=tsa_policy,
+                tsa_serial_number=tsa_serial_number
+            )
+            self.signatures.append(sig_info)
 
         if curr_errors and isinstance(errors, list):
             errors.extend(curr_errors)
@@ -459,8 +459,8 @@ class CryptoPkcs7:
         The natures of *doc_in* and *pfx_in* depend on their respective data types:
           - type *BytesIO*: is a byte stream
           - type *Path*: is a path to a file holding the data
-          - type *str*: holds the data (used as utf8-encoded)
           - type *bytes*: holds the data (used as is)
+          - type *str*: holds the data (used as utf8-encoded)
 
         The signature is created as a PKCS#7/CMS compliant structure with full certificate chain.
         The parameter *sig_mode* determines whether the payload is to be embedded (*attached*),
@@ -484,7 +484,7 @@ class CryptoPkcs7:
         :param doc_in: the document to sign
         :param pfx_in: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
         :param pfx_pwd: password for the *.pfx* data (if not provided, *pfx_in* is assumed to be unencrypted)
-        :param p7s_out: path to the output PKCS#7 file (optional, no output if not provided)
+        :param p7s_out: path or byte stream to output the PKCS#7 file (optional, no output if not provided)
         :param embed_attrs: whether to embed the signed attributes in the PKCS#7 structure (defaults to *True*)
         :param hash_alg: the algorithm for hashing
         :param sig_type: whether to handle the payload as "attached" (defaults to "detached")
@@ -548,14 +548,14 @@ class CryptoPkcs7:
                 result = crypto_pkcs7
 
                 # output the PKCS#7 file
-                if not curr_errors and p7s_out:
+                if not curr_errors:
                     if isinstance(p7s_out, str):
                         p7s_out = Path(p7s_out)
                     if isinstance(p7s_out, Path):
                         # write the PKCS#7 data to a file
                         with p7s_out.open("wb") as out_f:
                             out_f.write(pkcs7_data)
-                    else:  # isinstance(p7s_out, BytesIO)
+                    elif isinstance(p7s_out, BytesIO):
                         # stream the PKCS#7 data to a file
                         p7s_out.write(pkcs7_data)
 

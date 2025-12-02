@@ -2,7 +2,7 @@ from __future__ import annotations
 import base64
 import sys
 import tempfile
-from asn1crypto import cms, tsp
+from asn1crypto import cms, tsp, x509 as asn1crypto_x509
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
@@ -81,9 +81,9 @@ class CryptoPdf:
 
         The nature of *doc_in* depends on its data type:
           - type *BytesIO*: *doc_in* is a byte stream
+          - type *Path*: *doc_in* is a path to a file holding the data
           - type *bytes*: *doc_in* holds the data (used as is)
           - type *str*: *doc_in* holds the data (used as utf8-encoded)
-          - type *Path*: *doc_in* is a path to a file holding the data
 
         If *doc_in* is encrypted, the decryption password must be provided in *doc_pwd*.
 
@@ -129,45 +129,63 @@ class CryptoPdf:
 
             # extract the signature and its algorithms
             signature: bytes = signer_info["signature"].native
-            signature_algorithm: str = signer_info["signature_algorithm"]["algorithm"].native
-            alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
-            hash_algorithm: HashAlgorithm = HashAlgorithm(alg_name)
+            signature_alg_name: str = signer_info["signature_algorithm"]["algorithm"].native
+            digest_alg_name: str = signer_info["digest_algorithm"]["algorithm"].native
+            hash_algorithm: HashAlgorithm = HashAlgorithm(digest_alg_name)
 
             # extract signature timestamp and payload hash
-            chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
             payload_hash: bytes | None = None
             signature_timestamp: datetime | None = None
+            # ruff: noqa: SIM401 - 'get' is not applicable for 'signer_info'
+            signed_attrs: cms.CMSAttributes = signer_info["signed_attrs"] if "signed_attrs" in signer_info else []
             if "signed_attrs" in signer_info:
                 signed_attrs: cms.CMSAttributes = signer_info["signed_attrs"]
-                for signed_attr in signed_attrs:
-                    attr_type: str = signed_attr["type"].native
-                    match attr_type:
-                        case "message_digest":
-                            payload_hash = signed_attr["values"][0].native
-                        case "signing_time":
-                            signature_timestamp = signed_attr["values"][0].native
+            for signed_attr in signed_attrs:
+                attr_type: str = signed_attr["type"].native
+                match attr_type:
+                    case "message_digest":
+                        payload_hash = signed_attr["values"][0].native
+                    case "signing_time":
+                        signature_timestamp = signed_attr["values"][0].native
             # validate hash
             from .crypto_pomes import crypto_hash
-            effective_hash: bytes = crypto_hash(msg=payload,
-                                                alg=hash_algorithm)
+            computed_hash: bytes = crypto_hash(msg=payload,
+                                               alg=hash_algorithm)
             if not payload_hash:
-                payload_hash = effective_hash
-            elif payload_hash != effective_hash:
+                payload_hash = computed_hash
+            elif payload_hash != computed_hash:
                 msg: str = f"Invalid digest for signature timestamp '{signature_timestamp}'"
                 if CryptoPdf.logger:
                     CryptoPdf.logger.error(msg=msg)
                 curr_errors.append(msg)
                 break
 
-            # build the certificate chain
+            # select the correct certificate while building the certificate chain
+            signer_id: cms.SignerIdentifier = signer_info["sid"]
+            signer_cert_bytes: bytes | None = None
             cert_chain: list[bytes] = []
             certs: cms.CertificateSet = signed_data["certificates"]
-            for cert in certs:
+            for cert_choice in certs:
+                # HAZARD: 'cert' is not a 'cryptography.x509.Certificate' object
+                cert: asn1crypto_x509.Certificate = cert_choice.chosen
                 der_bytes: bytes = cert.dump()
                 cert_chain.append(der_bytes)
+                if signer_cert_bytes is None:
+                    if signer_id.name == "issuer_and_serial_number":
+                        # match issuer and serial number
+                        if cert.issuer == signer_id.chosen["issuer"] and \
+                           cert.serial_number == signer_id.chosen["serial_number"].native:
+                            signer_cert_bytes = der_bytes
+                    elif signer_id.name == "subject_key_identifier":
+                        # extract SKI from certificate extensions
+                        for ext in cert["tbs_certificate"]["extensions"]:
+                            if ext["extn_id"].native == "subject_key_identifier" and \
+                                    ext["extn_value"].native == signer_id.chosen.native:
+                                signer_cert_bytes = der_bytes
+                                break
 
             # extract certificates and public key
-            signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=cert_chain[0])
+            signer_cert: x509.Certificate = x509.load_der_x509_certificate(data=signer_cert_bytes)
             public_key: PublicKeyTypes = signer_cert.public_key()
             cert_serial_number: int = signer_cert.serial_number
 
@@ -203,14 +221,28 @@ class CryptoPdf:
                         if CryptoPdf.logger:
                             msg: str = exc_format(exc=e,
                                                   exc_info=sys.exc_info())
-                            CryptoPdf.logger.error(msg=msg)
+                            CryptoPdf.logger.warning(msg=msg)
                     break
 
             # verify the signature
+            if signed_attrs:
+                # HAZARD - notes on 'signed_attrs':
+                #   - when it exists, the signature covers its attributes, not the payload
+                #   - it was sorted in DER canonical order before being signed
+                #   - it was kept in storage in the insert order of its attributes
+                #   - 'dump()' fails to sort it in DER canonical order
+                #   - a manual sort is thus required, for the verification to succeed
+                sorted_attrs: list[cms.CMSAttribute] = sorted(signed_attrs,
+                                                              key=lambda attr: attr.dump())
+                signed_attrs = cms.CMSAttributes(sorted_attrs)
+                computed_hash = crypto_hash(msg=signed_attrs.dump(),
+                                            alg=hash_algorithm)
+
+            chp_hash: ChpHash = _chp_hash(alg=hash_algorithm)
             try:
                 if isinstance(public_key, RSAPublicKey):
                     # determine the signature padding used
-                    if "pss" in signature_algorithm:
+                    if "pss" in signature_alg_name:
                         signature_padding: padding.AsymmetricPadding = padding.PSS(
                             mgf=padding.MGF1(algorithm=chp_hash),
                             salt_length=padding.PSS.MAX_LENGTH
@@ -218,18 +250,20 @@ class CryptoPdf:
                     else:
                         signature_padding: padding.AsymmetricPadding = padding.PKCS1v15()
                     public_key.verify(signature=signature,
-                                      data=payload_hash,
+                                      data=computed_hash,
                                       padding=signature_padding,
                                       algorithm=Prehashed(chp_hash))
                 else:
                     public_key.verify(signature=signature,
-                                      data=payload_hash,
+                                      data=computed_hash,
                                       algorithm=Prehashed(chp_hash))
             except Exception as e:
+                msg: str = exc_format(exc=e,
+                                      exc_info=sys.exc_info()) + f" signed by {signer_common_name}"
                 if CryptoPdf.logger:
-                    msg: str = exc_format(exc=e,
-                                          exc_info=sys.exc_info()) + f" signed by {signer_common_name}"
-                    CryptoPdf.logger.warning(msg=msg)
+                    CryptoPdf.logger.error(msg=msg)
+                curr_errors.append(msg)
+                break
 
             # build the signature's crypto data and save it
             sig_info: CryptoPdf.SignatureInfo = CryptoPdf.SignatureInfo(
@@ -237,7 +271,7 @@ class CryptoPdf:
                 payload_hash=payload_hash,
                 hash_algorithm=hash_algorithm,
                 signature=signature,
-                signature_algorithm=signature_algorithm,
+                signature_algorithm=signature_alg_name,
                 signature_timestamp=signature_timestamp,
                 public_key=public_key,
                 signer_common_name=signer_common_name,
@@ -437,20 +471,20 @@ class CryptoPdf:
              tsa_password: str = None,
              errors: list[str] = None) -> CryptoPdf:
         """
-        Digitally sign a PDF file in *PAdES* format using an A1 certificate.
+        Digitally sign a PDF file in *PAdES* format, using an A1 certificate.
 
         The natures of *doc_in* and *pfx_in* depend on their respective data types:
           - type *BytesIO*: is a byte stream
           - type *Path*: is a path to a file holding the data
-          - type *str*: holds the data (used as utf8-encoded)
           - type *bytes*: holds the data (used as is)
+          - type *str*: holds the data (used as utf8-encoded)
 
         Supports visible signature appearance, TSA timestamping, and multiple signatures.
 
         :param doc_in: input PDF data
         :param pfx_in: the PKCS#12 (*.pfx*) data, containing A1 certificate and private key
         :param pfx_pwd: password for the *.pfx* data (if not provided, *pfx_in* is assumed to be unencrypted)
-        :param doc_out: path or stream to output the signed/re-signed PDF file (optional, no output if not provided)
+        :param doc_out: byte stream or path to output the signed PDF file (optional, no output if not provided)
         :param location: location of signing
         :param reason: reason for signing
         :param make_visible: whether to include a visible signature appearance
@@ -476,6 +510,7 @@ class CryptoPdf:
                                              delete=False) as tmp:
                 tmp.write(pfx_bytes)
                 pfx_in = Path(tmp.name)
+        # returns 'None' on failure
         simple_signer: SimpleSigner = SimpleSigner.load_pkcs12(pfx_file=pfx_in,
                                                                passphrase=pwd_bytes)
         if is_temp:
@@ -507,7 +542,6 @@ class CryptoPdf:
             # open PDF file for incremental signing
             doc_in = file_get_data(file_data=doc_in)
             pdf_stream: BytesIO = BytesIO(initial_bytes=doc_in)
-            output_buf: BytesIO | None = None
 
             pdf_stream.seek(0)
             writer: IncrementalPdfFileWriter = IncrementalPdfFileWriter(input_stream=pdf_stream,
@@ -558,6 +592,7 @@ class CryptoPdf:
                                               timestamper=timestamper,
                                               stamp_style=stamp_style,
                                               new_field_spec=new_field_spec)
+            output_buf: BytesIO | None = None
             try:
                 output_buf = pdf_signer.sign_pdf(pdf_out=writer)
             except Exception as e:
@@ -568,19 +603,25 @@ class CryptoPdf:
                 if isinstance(errors, list):
                     errors.append(exc_err)
 
-            # output the signed PDF file
-            if output_buf and doc_out:
-                output_buf.seek(0)
-                signed_pdf: bytes = output_buf.read()
-                if isinstance(doc_out, str):
-                    doc_out = Path(doc_out)
-                if isinstance(doc_out, Path):
-                    # write the signed PDF file
-                    with doc_out.open("wb") as out_f:
-                        out_f.write(signed_pdf)
-                else:  # isinstance(doc_out, BytesIO)
-                    # stream the signed PDF file
-                    doc_out.write(signed_pdf)
+            if output_buf:
+                crypto_pdf: CryptoPdf = CryptoPdf(doc_in=output_buf,
+                                                  errors=errors)
+                if not errors:
+                    result = crypto_pdf
+
+                    # output the signed/re-signed PDF file
+                    if doc_out:
+                        output_buf.seek(0)
+                        signed_pdf: bytes = output_buf.read()
+                        if isinstance(doc_out, str):
+                            doc_out = Path(doc_out)
+                        if isinstance(doc_out, Path):
+                            # write the signed PDF file
+                            with doc_out.open("wb") as out_f:
+                                out_f.write(signed_pdf)
+                        elif isinstance(doc_out, BytesIO):
+                            # stream the signed PDF file
+                            doc_out.write(signed_pdf)
         else:
             msg: str = "Unable to load PKCS#12 data from 'pfx_data'"
             if CryptoPdf.logger:

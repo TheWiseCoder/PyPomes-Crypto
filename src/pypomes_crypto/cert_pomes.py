@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.serialization.pkcs12 import serialize_key_an
 from cryptography.x509.ocsp import OCSPRequestBuilder, load_der_ocsp_response
 from cryptography.x509.oid import NameOID
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from logging import Logger
 from pathlib import Path
 from pypomes_core import exc_format
@@ -106,15 +107,15 @@ def cert_make_pfx(common_name: str,
                   country: str,
                   valid_from: datetime = None,
                   valid_for: int = 365,
-                  pfx_filepath: Path | str = None,
+                  pfx_out: BytesIO | Path | str = None,
                   pfx_password: str | bytes = None,
                   friendly_name: str | bytes = None,
                   cert_set: list[x509.Certificate] = None) -> bytes:
     """
     Generate a PFX (PKCS#12) file by way of a self-signed x509 digital certificate/private key set.
 
-    If specified, *pfx_filepath* must contain a valid filepath. If provided without a file extension,
-    the latter is set to *.pfx". If the file already exists, it will be overwritten.
+    If specified, *pfx_out* must be a *BytesIO* object, or contain a valid filepath. If the latter is
+    provided without a file extension, it is set to *.pfx". If the file already exists, it will be overwritten.
 
     :param common_name: the certificates's common name, typically the holder's identification
     :param organization: the reference organization
@@ -123,7 +124,7 @@ def cert_make_pfx(common_name: str,
     :param country: the two-letter *Country Code Top-Level Domain* (ccTLD)
     :param valid_from: the certificate's validation start (defaults to now)
     :param valid_for: the certificate's validation period, in days (defaults to one year)
-    :param pfx_filepath: optional path to output the *.pfx* file (no file written, if not provided)
+    :param pfx_out: optional path to output the *.pfx* file (no file written, if not provided)
     :param pfx_password: optional password for the *.pfx* file (file not encrypted, if not provided)
     :param friendly_name: optional friendly name for the certificate in the *.pfx* file
     :param cert_set: optional set of certificates to include in the *.pfx* file
@@ -144,7 +145,7 @@ def cert_make_pfx(common_name: str,
     # obtain and return the PKCS#12 structure
     return cert_build_pfx(certificate=certificate,
                           private_key=private_key,
-                          pfx_filepath=pfx_filepath,
+                          pfx_out=pfx_out,
                           pfx_password=pfx_password,
                           friendly_name=friendly_name,
                           cert_set=cert_set)
@@ -152,19 +153,19 @@ def cert_make_pfx(common_name: str,
 
 def cert_build_pfx(certificate: x509.Certificate,
                    private_key: RSAPrivateKey,
-                   pfx_filepath: Path | str = None,
+                   pfx_out: BytesIO | Path | str = None,
                    pfx_password: str | bytes = None,
                    friendly_name: str | bytes = None,
                    cert_set: list[x509.Certificate] = None) -> bytes:
     """
     Build a PFX (PKCS#12) file from cryptography's *Certificate* and *RSAPrivateKey* objects.
 
-    If specified, *pfx_filepath* must contain a valid filepath. If provided without a file extension,
-    the latter is set to *.pfx". If the file already exists, it will be overwritten.
+    If specified, *pfx_out* must be a *BytesIO* object, or contain a valid filepath. If the latter is
+    provided without a file extension, it is set to *.pfx". If the file already exists, it will be overwritten.
 
     :param certificate: the *cryptography.x509.Certificate* object
     :param private_key: the *cryptography.hazmat.primitives.asymmetric.rsa.RSAPrivateKey* object
-    :param pfx_filepath: optional path to output the *.pfx* file (no file written, if not provided)
+    :param pfx_out: optional path or byte stream to output the *.pfx* file (optional, no output if not provided)
     :param pfx_password: optional password for the *.pfx* file (file not emcrypted, if not provided)
     :param friendly_name: optional friendly name for the certificate in the *.pfx* file
     :param cert_set: optional set of certificates to include in the *.pfx* file
@@ -185,15 +186,19 @@ def cert_build_pfx(certificate: x509.Certificate,
                                                    cert=certificate,
                                                    cas=cert_set,
                                                    encryption_algorithm=encryption)
-    # write the PKCS#12 structure to a file
-    if pfx_filepath:
-        # make sure 'pfx_filepath' is a 'Path'
-        pfx_filepath = Path(pfx_filepath)
-        if not pfx_filepath.suffix:
-            pfx_filepath = pfx_filepath.with_suffix(".pfx")
+    # output the PKCS#12 structure
+    if isinstance(pfx_out, str):
+        pfx_out = Path(pfx_out)
+    if isinstance(pfx_out, Path):
+        # write the PKCS#12 data to a file
+        if not pfx_out.suffix:
+            pfx_out = pfx_out.with_suffix(".pfx")
         # write the file
-        with pfx_filepath.open("wb") as f:
-            f.write(result)
+        with pfx_out.open("wb") as out_f:
+            out_f.write(result)
+    elif isinstance(pfx_out, BytesIO):
+        # stream the PKCS#12 data to a file
+        pfx_out.write(result)
 
     return result
 
