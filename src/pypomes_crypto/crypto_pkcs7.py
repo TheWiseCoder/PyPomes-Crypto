@@ -66,10 +66,10 @@ class CryptoPkcs7:
         Instantiate the *CryptoPkcs7* class, and extract the relevant crypto data.
 
         The natures of *p7x_in* and *doc_in* depend on their respective data types:
-          - type *BytesIO*: is a byte stream
-          - type *Path*: is a path to a file holding the data
-          - type *bytes*: holds the data (used as is)
-          - type *str*: holds the data (used as utf8-encoded)
+            - type *BytesIO*: is a byte stream
+            - type *Path*: is a path to a file holding the data
+            - type *bytes*: holds the data (used as is)
+            - type *s'tr*: holds the data (used as utf8-encoded)
 
         The PKCS#7 data provided in *p7s_in* contains the A1 certificate and its corresponding
         public key, the certificate chain, the original payload (if *attached* mode), and the

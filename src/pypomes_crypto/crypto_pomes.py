@@ -27,15 +27,16 @@ from .crypto_common import (
 )
 
 
-def crypto_hash(msg: Path | str | bytes,
+def crypto_hash(msg: BytesIO | Path | str | bytes,
                 alg: HashAlgorithm | str = CRYPTO_DEFAULT_HASH_ALGORITHM) -> bytes:
     """
     Compute the hash of *msg*, using the algorithm specified in *alg*.
 
     The nature of *msg* dependes on its data type:
+        - type *BytesIO*: *sg* is a byte stream
+        - type *Path*: *msg* is a path to a file holding the data
         - type *bytes*: *msg* holds the data (used as is)
         - type *str*: *msg* holds the data (used as utf8-encoded)
-        - type *Path*: *msg* is a path to a file holding the data
         - other: *pickle*'s serialization of *msg* is used
 
     Supported algorithms:
@@ -73,6 +74,13 @@ def crypto_hash(msg: Path | str | bytes,
                     file_bytes = f.read(buf_size)
             result = hasher.digest()
 
+        elif isinstance(msg, BytesIO):
+            # argument is type 'stream'
+            msg.seek(0)
+            msg_bytes: bytes = msg.read()
+            hasher.update(msg_bytes)
+            result = hasher.digest()
+
         else:
             # argument is unknown
             with suppress(Exception):
@@ -104,7 +112,7 @@ def crypto_generate_rsa_keys(key_size: int = 2048) -> tuple[bytes, bytes]:
     return result_priv, result_pub
 
 
-def crypto_encrypt(plaintext: Path | str | bytes,
+def crypto_encrypt(plaintext: BytesIO | Path | str | bytes,
                    key: bytes,
                    errors: list[str] = None) -> bytes:
     """
@@ -120,9 +128,10 @@ def crypto_encrypt(plaintext: Path | str | bytes,
     consider using *crypto_aes_encrypt()/crypto_aes_decrypt()* in this package.
 
     The nature of *plaintext* depends on its data type:
+      - type *BytesIO*: *plaintext* is a byte stream
+      - type *Path*: *plaintext* is a path to a file holding the data
       - type *bytes*: *plaintext* holds the data (used as is)
       - type *str*: *plaintext* holds the data (used as utf8-encoded)
-      - type *Path*: *plaintext* is a path to a file holding the data
 
     The mandatory *key* must be 16, 24, or 32 bytes long.
 
@@ -153,7 +162,7 @@ def crypto_encrypt(plaintext: Path | str | bytes,
     return result
 
 
-def crypto_decrypt(ciphertext: Path | str | bytes,
+def crypto_decrypt(ciphertext: BytesIO | Path | str | bytes,
                    key: bytes,
                    errors: list[str] = None) -> bytes:
     """
@@ -169,9 +178,10 @@ def crypto_decrypt(ciphertext: Path | str | bytes,
     consider using *crypto_aes_encrypt()/crypto_aes_decrypt()* in this package.
 
     The nature of *ciphertext* depends on its data type:
-      - type *bytes*: *ciphertext* holds the data (used as is)
-      - type *str*: *ciphertext* holds the data (used as utf8-encoded)
-      - type *Path*: *ciphertext* is a path to a file holding the data
+        - type *BytesIO*: *ciphertext* is a byte stream
+        - type *Path*: *ciphertext* is a path to a file holding the data
+        - type *bytes*: *ciphertext* holds the data (used as is)
+        - type *str*: *ciphertext* holds the data (used as utf8-encoded)
 
      The *key* must be the same one used to generate *ciphertext*.
 

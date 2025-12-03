@@ -82,10 +82,10 @@ class CryptoPdf:
         Instantiate the *CryptoPdf* class, and extract the relevant crypto data.
 
         The nature of *doc_in* depends on its data type:
-          - type *BytesIO*: *doc_in* is a byte stream
-          - type *Path*: *doc_in* is a path to a file holding the data
-          - type *bytes*: *doc_in* holds the data (used as is)
-          - type *str*: *doc_in* holds the data (used as utf8-encoded)
+            - type *BytesIO*: *doc_in* is a byte stream
+            - type *Path*: *doc_in* is a path to a file holding the data
+            - type *bytes*: *doc_in* holds the data (used as is)
+            - type *str*: *doc_in* holds the data (used as utf8-encoded)
 
         If *doc_in* is encrypted, the decryption password must be provided in *doc_pwd*.
 

@@ -232,6 +232,8 @@ def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
     for cert in certs:
         cert_der: bytes | None = None
         cert_pem: str | None = None
+
+        # convert to 'pem' or 'der'
         if isinstance(cert, x509.Certificate):
             # 'cert' is a certificate object
             if fmt == "der":
@@ -253,6 +255,7 @@ def cert_bundle_certs(certs: list[str | bytes | x509.Certificate],
                 cert_x509: x509.Certificate = x509.load_der_x509_certificate(data=cert)
                 cert_pem = cert_x509.public_bytes(encoding=Encoding.PEM).decode(encoding="utf-8")
 
+        # add to the bundle
         if fmt == "der":
             result += len(cert_der).to_bytes(length=4,
                                              byteorder="big") + cert_der
@@ -388,7 +391,7 @@ def cert_verify_chain(cert_chain: list[x509.Certificate],
         elif now > cert.not_valid_after:
             err_msg = f"Certificate '{cert.subject}' expired"
         elif idx > 0:  # intermediates
-            bc: x509.BasicConstraints = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+            bc: x509.BasicConstraints = cert.extensions.get_extension_for_class(extclass=x509.BasicConstraints).value
             if not bc.ca:
                 err_msg = f"'{cert.subject}' is not a CA"
             elif isinstance(bc.path_length, int) and len(cert_chain) - idx - 1 > bc.path_length:
@@ -458,20 +461,20 @@ def cert_verify_signature(cert: x509.Certificate,
             sig_oid: str = cert.signature_algorithm_oid.dotted_string
             if sig_oid == "1.2.840.113549.1.1.10":  # RSASSA-PSS
                 chosen_padding: padding.AsymmetricPadding = padding.PSS(
-                    mgf=padding.MGF1(cert.signature_hash_algorithm),
+                    mgf=padding.MGF1(algorithm=cert.signature_hash_algorithm),
                     salt_length=padding.PSS.MAX_LENGTH
                 )
             else:
                 chosen_padding: padding.AsymmetricPadding = padding.PKCS1v15()
 
-            public_key.verify(cert.signature,
-                              cert.tbs_certificate_bytes,
-                              chosen_padding,
-                              cert.signature_hash_algorithm)
+            public_key.verify(signature=cert.signature,
+                              data=cert.tbs_certificate_bytes,
+                              padding=chosen_padding,
+                              algorithm=cert.signature_hash_algorithm)
         else:
-            public_key.verify(cert.signature,
-                              cert.tbs_certificate_bytes,
-                              cert.signature_hash_algorithm)
+            public_key.verify(signature=cert.signature,
+                              data=cert.tbs_certificate_bytes,
+                              algorithm=cert.signature_hash_algorithm)
         result = True
     except Exception as e:
         exc_err: str = exc_format(exc=e,

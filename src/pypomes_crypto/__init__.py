@@ -19,9 +19,9 @@ from .crypto_pkcs7 import (
 )
 from .crypto_pomes import (
     crypto_hash, crypto_generate_rsa_keys,
-    crypto_verify_pdf, crypto_verify_p7x,
     crypto_encrypt, crypto_decrypt,
-    crypto_pwd_encrypt, crypto_pwd_verify
+    crypto_pwd_encrypt, crypto_pwd_verify,
+    crypto_verify_pdf, crypto_verify_p7x
 )
 from .jwt_pomes import (
     jwt_convert, jwt_validate,
@@ -47,9 +47,9 @@ __all__ = [
     # crypto_pomes
     "CRYPTO_DEFAULT_HASH_ALGORITHM",
     "crypto_hash", "crypto_generate_rsa_keys",
-    "crypto_verify_pdf", "crypto_verify_p7x",
     "crypto_encrypt", "crypto_decrypt",
     "crypto_pwd_encrypt", "crypto_pwd_verify",
+    "crypto_verify_pdf", "crypto_verify_p7x",
     # jwt_pomes
     "jwt_convert", "jwt_validate",
     "jwt_get_header", "jwt_get_payload",
