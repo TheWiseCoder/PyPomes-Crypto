@@ -302,7 +302,7 @@ def crypto_verify_p7x(p7x_in: BytesIO | Path | str | bytes,
 
     # signatures in PKCS#7 share the same payload
     payload: bytes = _cms_get_payload(signed_data=signed_data,
-                                      doc_in=doc_in,
+                                      payload_bytes=file_get_data(file_data=doc_in),
                                       errors=curr_errors,
                                       logger=logger) if signed_data else None
 

@@ -1,18 +1,16 @@
 from __future__ import annotations  # allow forward references
-import base64
-from asn1crypto import cms, pem
+from asn1crypto import cms
 from datetime import datetime
-from dataclasses import dataclass
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes, PublicKeyTypes
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, pkcs7, pkcs12
+from cryptography.hazmat.primitives.serialization import Encoding, pkcs7, pkcs12
 from io import BytesIO
 from logging import Logger
 from pathlib import Path
 from pypomes_core import file_get_data
-from typing import Any, Literal
 
+from .crypto_base import CryptoBase
 from .crypto_common import (
     CRYPTO_DEFAULT_HASH_ALGORITHM,
     HashAlgorithm, SignatureType, ChpHash,
@@ -22,7 +20,7 @@ from .crypto_common import (
 )
 
 
-class CryptoPkcs7:
+class CryptoPkcs7(CryptoBase):
     """
     Python code to extract crypto data from a PKCS#7 signature file.
 
@@ -36,27 +34,6 @@ class CryptoPkcs7:
     """
     # class-level logger
     logger: Logger | None = None
-
-    @dataclass(frozen=True)
-    class SignatureInfo:
-        """
-        These are the attributes holding the signature data.
-        """
-        payload_hash: bytes                 # the payload hash
-        hash_algorithm: HashAlgorithm       # the algorithm used to calculate the payload hash
-        signature: bytes                    # the digital signature
-        signature_algorithm: str            # the algorithm used to generate the signature
-        signature_timestamp: datetime       # the signature's timestamp
-        public_key: PublicKeyTypes          # the public key (most likely, RSAPublicKey)
-        signer_cn: str                      # the common name of the certificate's signer
-        signer_cert: x509.Certificate       # the reference certificate (latest one in the chain)
-        cert_sn: int                        # the certificate's serial nmumber
-        cert_chain: list[bytes]             # the serialized X509 certificate chain (in DER format)
-
-        # TSA (Time Stamping Authority) data
-        tsa_timestamp: datetime             # the signature's timestamp
-        tsa_policy: str                     # the TSA's policy
-        tsa_sn: str                         # the timestamping's serial number
 
     def __init__(self,
                  p7x_in: BytesIO | Path | str | bytes,
@@ -76,36 +53,30 @@ class CryptoPkcs7:
         digital signature. The latter is always validated, and if a payload is provided in
         *doc_in* (*detached* mode), it is validated against its declared hash value.
 
-        :param p7x_in: the PKCS#7 data in *DER* or *PEDM* format
+        :param p7x_in: the PKCS#7 data in *DER* or *PEM* format
         :param doc_in: the original document data (the payload, required in *detached* mode)
         :param errors: incidental errors
         """
-        # declare/initialize the instance variables
-        self.signatures: list[CryptoPkcs7.SignatureInfo] = []
-        self.payload: bytes | None = None
-        self.p7s_bytes: bytes
-
-        # retrieve the PKCS#7 file data (if PEM, convert to DER)
-        self.p7s_bytes = file_get_data(file_data=p7x_in)
-        if pem.detect(self.p7s_bytes):
-            _, _, self.p7s_bytes = pem.unarmor(pem_bytes=self.p7s_bytes)
+        super().__init__(doc_in=doc_in,
+                         p7x_in=p7x_in)
 
         # define a local errors list
         curr_errors: list[str] = []
 
-        # extract the base CMS structure-
-        content_info: cms.ContentInfo = _cms_get_content_info(p7s_bytes=self.p7s_bytes,
+        # extract the base CMS structure
+        content_info: cms.ContentInfo = _cms_get_content_info(p7s_bytes=self.p7x_bytes,
                                                               errors=curr_errors,
                                                               logger=CryptoPkcs7.logger)
         signed_data: cms.SignedData = content_info["content"] if content_info else None
         signer_infos: cms.SignerInfos | None = None
         if signed_data:
             # signatures in PKCS#7 are parallel, not chained, so they share the same payload
-            self.payload = _cms_get_payload(signed_data=signed_data,
-                                            doc_in=doc_in,
-                                            errors=curr_errors,
-                                            logger=CryptoPkcs7.logger)
-            signer_infos: cms.SignerInfos = signed_data["signer_infos"]
+            self.payload_bytes = _cms_get_payload(signed_data=signed_data,
+                                                  payload_bytes=self.payload_bytes,
+                                                  errors=curr_errors,
+                                                  logger=CryptoPkcs7.logger)
+            if not curr_errors:
+                signer_infos: cms.SignerInfos = signed_data["signer_infos"]
 
         # process the signatures
         for signer_info in (signer_infos or []):
@@ -119,7 +90,7 @@ class CryptoPkcs7:
                                                                 attr_type="signing_time")
             # extract and validate the payload hash
             computed_hash: bytes = _cms_verify_payload_hash(signed_attrs=signed_attrs,
-                                                            payload=self.payload,
+                                                            payload=self.payload_bytes,
                                                             hash_alg=hash_algorithm,
                                                             errors=curr_errors,
                                                             logger=CryptoPkcs7.logger)
@@ -164,6 +135,7 @@ class CryptoPkcs7:
 
             # build the signature's crypto data and save it
             sig_info: CryptoPkcs7.SignatureInfo = CryptoPkcs7.SignatureInfo(
+                payload_ranges=[(0, len(self.payload_bytes))],
                 payload_hash=computed_hash,
                 hash_algorithm=hash_algorithm,
                 signature=signature,
@@ -182,160 +154,6 @@ class CryptoPkcs7:
 
         if curr_errors and isinstance(errors, list):
             errors.extend(curr_errors)
-
-    def get_digest(self,
-                   fmt: Literal["base64", "bytes"],
-                   sig_seq: int = 0) -> str | bytes:
-        """
-        Retrieve the digest associated with a reference signature, as specified in *sig_seq* and *fmt*.
-
-        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
-        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
-        signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
-        the range of available signatures, the latest signature is selected.
-
-        :param fmt: the format to use
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the digest, as per *fmt* (Base64-encoded or raw bytes)
-        """
-        sig_info: CryptoPkcs7.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        return sig_info.payload_hash \
-            if fmt == "bytes" else base64.b64encode(s=sig_info.payload_hash).decode(encoding="utf-8")
-
-    def get_signature(self,
-                      fmt: Literal["base64", "bytes"],
-                      sig_seq: int = 0) -> str | bytes:
-        """
-        Retrieve the signature associated with a reference signature, as specified in *sig_seq* and *fmt*.
-
-        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
-        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
-        signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
-        the range of available signatures, the latest signature is selected.
-
-        :param fmt: the format to use
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the signature, as per *fmt* (Base64-encoded or raw bytes)
-        """
-        sig_info: CryptoPkcs7.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        return sig_info.signature \
-            if fmt == "bytes" else base64.b64encode(s=sig_info.signature).decode(encoding="utf-8")
-
-    def get_public_key(self,
-                       fmt: Literal["base64", "der", "pem"],
-                       sig_seq: int = 0) -> str | bytes:
-        """
-        Retrieve the public key associated with a reference signature, as specified in *sig_seq* and *fmt*.
-
-        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
-        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
-        signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
-        the range of available signatures, the latest signature is selected.
-
-        These are the supported formats:
-            - *der*: the raw binary representation of the key
-            - *pem*: the Base64-encoded key with headers and line breaks
-            - *base64*: the Base64-encoded DER bytes
-
-        :param fmt: the format to use
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the public key, as per *fmt* (*str* or *bytes*)
-        """
-        # declare the return variable
-        result: str | bytes
-
-        sig_info: CryptoPkcs7.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        if fmt == "pem":
-            result = sig_info.public_key.public_bytes(encoding=Encoding.PEM,
-                                                      format=PublicFormat.SubjectPublicKeyInfo)
-            result = result.decode(encoding="utf-8")
-        else:
-            result = sig_info.public_key.public_bytes(encoding=Encoding.DER,
-                                                      format=PublicFormat.SubjectPublicKeyInfo)
-            if fmt == "base64":
-                result = base64.b64encode(s=result).decode(encoding="utf-8")
-
-        return result
-
-    def get_cert_chain(self,
-                       sig_seq: int = 0) -> list[bytes]:
-        """
-        Retrieve the certificate chain associated with a reference signature, as specified in *sig_seq*.
-
-        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
-        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
-        signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
-        the range of available signatures, the latest signature is selected.
-
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the signature, as per *fmt* (Base64-encoded or raw bytes)
-        """
-        sig_info: CryptoPkcs7.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        return sig_info.cert_chain
-
-    def get_metadata(self,
-                     sig_seq: int = 0) -> dict[str, Any]:
-        """
-        Retrieve the certificate chain metadata associated with a reference signature, as specified in *sig_seq*.
-
-        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
-        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
-        signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
-        the range of available signatures, the latest signature is selected.
-
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the certificate chain metadata associated with the reference signature
-        """
-        # declare the return variable
-        result: dict[str, Any]
-
-        sig_info: CryptoPkcs7.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        cert: x509.Certificate = sig_info.signer_cert
-
-        result: dict[str, Any] = {
-            "signer-cn": sig_info.signer_cn,
-            "hash-algorithm": sig_info.hash_algorithm,
-            "signature-algorithm": sig_info.signature_algorithm,
-            "signature-timestamp": sig_info.signature_timestamp,
-            "cert-sn": sig_info.cert_sn,
-            "cert-not-before": cert.not_valid_before,
-            "cert-not-after": cert.not_valid_after,
-            "cert-subject": cert.subject.rfc4514_string(),
-            "cert-issuer": cert.issuer.rfc4514_string(),
-            "cert-chain-length": len(sig_info.cert_chain)
-        }
-        # add the TSA details
-        if sig_info.tsa_sn:
-            result.update({
-                "tsa-timestamp": sig_info.tsa_timestamp,
-                "tsa-policy": sig_info.tsa_policy,
-                "tsa-sn": sig_info.tsa_sn
-            })
-
-        return result
-
-    def __get_sig_info(self,
-                       sig_seq: int) -> CryptoPkcs7.SignatureInfo:
-        """
-        Retrieve the signature metadata of a reference signature, as specified in *sig_seq*.
-
-        The natural ordering of the signatures in a *PKCS#7* compliant *.p7s* file is the chronological
-        *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position of the last
-        signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of
-        the range of available signatures, the latest signature is selected.
-
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the reference signature's metadata
-
-        """
-        sig_ordinal: int = max(-1, len(self.signatures) - sig_seq - 1)
-        return self.signatures[sig_ordinal]
 
     @staticmethod
     def sign(doc_in: BytesIO | Path | str | bytes,

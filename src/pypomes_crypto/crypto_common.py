@@ -6,12 +6,8 @@ from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from datetime import datetime
 from enum import StrEnum, auto
-from io import BytesIO
 from logging import Logger
-from pathlib import Path
-from pypomes_core import (
-    APP_PREFIX, env_get_enum, exc_format, file_get_data
-)
+from pypomes_core import APP_PREFIX, env_get_enum, exc_format
 from typing import Any, Final
 
 
@@ -200,21 +196,17 @@ def _cms_get_content_info(p7s_bytes: bytes,
 
 
 def _cms_get_payload(signed_data: cms.SignedData,
-                     doc_in: BytesIO | Path | bytes | str,
+                     payload_bytes: bytes,
                      errors: list[str],
                      logger: Logger | None) -> bytes | None:
     """
     Retrieve the payload associated with the CMS *SignedData* structure in *signed_data*.
 
-    If the payload is not embedded in the CMS structure, is is obtained from the original document data
-    in *doc_in*, whose nature depends on its data type:
-      - type *BytesIO*: *doc_in* is a byte stream
-      - type *Path*: *doc_in* is a path to a file holding the data
-      - type *bytes*: *doc_in* holds the data (used as is)
-      - type *str*: *doc_in* holds the data (used as utf8-encoded)
+    If the payload is not embedded in the CMS structure, is is assumed to have been obtained from the
+    original document data.
 
     :param signed_data: the reference *SignedData* structure
-    :param doc_in: the original document data (the payload, if detached mode)
+    :param payload_bytes: the original document data (the payload, if detached mode)
     :param errors: incidental errors
     :param logger: optional logger
     :return: the payload associated with *signed_data*, or *None* if no payload was retrieved
@@ -222,15 +214,19 @@ def _cms_get_payload(signed_data: cms.SignedData,
     # attempt to obtain the embedded payload
     result: bytes = signed_data["encap_content_info"]["content"].native
 
+    err_msg: str | None = None
     if not result:
-        if doc_in:
-            # detached mode, retrieve payload from external document
-            result = file_get_data(file_data=doc_in)
+        if payload_bytes:
+            result = payload_bytes
         else:
-            msg: str = "For detached mode, a payload file must be provided"
-            if logger:
-                logger.error(msg=msg)
-            errors.append(msg)
+            err_msg = "For detached mode, a payload file must be provided"
+    elif payload_bytes and result != payload_bytes:
+        err_msg: str = "The stored payload does note match the provided payload file"
+
+    if err_msg:
+        if logger:
+            logger.error(msg=err_msg)
+        errors.append(err_msg)
 
     return result
 

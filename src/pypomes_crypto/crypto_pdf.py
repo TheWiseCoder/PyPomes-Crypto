@@ -1,13 +1,10 @@
 from __future__ import annotations
-import base64
 import sys
 import tempfile
 from asn1crypto import cms
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from logging import Logger
@@ -28,8 +25,8 @@ from PyPDF2 import PdfReader
 from PyPDF2.generic import ArrayObject, ByteStringObject, DictionaryObject, Field
 from pypomes_core import TZ_LOCAL, file_get_data, exc_format
 from requests.auth import HTTPBasicAuth
-from typing import Any, Literal
 
+from .crypto_base import CryptoBase
 from .crypto_common import (
     HashAlgorithm, _cms_build_cert_chain,
     _cms_verify_payload_hash, _cms_get_attr_value, _cms_get_tsa_info,
@@ -37,7 +34,7 @@ from .crypto_common import (
 )
 
 
-class CryptoPdf:
+class CryptoPdf(CryptoBase):
     """
     Python code to extract crypto data from a *PAdES* compliant, digitally signed, PDF file.
 
@@ -51,28 +48,6 @@ class CryptoPdf:
     """
     # class-level logger
     logger: Logger | None = None
-
-    @dataclass(frozen=True)
-    class SignatureInfo:
-        """
-        These are the attributes holding the signature data.
-        """
-        payload_range: tuple[int, int, int, int]  # the range of bytes comprising the payload
-        payload_hash: bytes                       # the payload hash
-        hash_algorithm: HashAlgorithm             # the algorithm used to calculate the payload hash
-        signature: bytes                          # the digital signature
-        signature_algorithm: str                  # the algorithm used to generate the signature
-        signature_timestamp: datetime             # the signature's timestamp
-        public_key: PublicKeyTypes                # the public key (most likely, RSAPublicKey)
-        signer_cn: str                            # the common name of the certificate's signer
-        signer_cert: x509.Certificate             # the reference certificate (latest one in the chain)
-        cert_sn: int                              # the certificate's serial nmumber
-        cert_chain: list[bytes]                   # the serialized X509 certificate chain (in DER format)
-
-        # TSA (Time Stamping Authority) data
-        tsa_timestamp: datetime                   # the signature's timestamp
-        tsa_policy: str                           # the TSA's policy
-        tsa_sn: str                               # the timestamping's serial number
 
     def __init__(self,
                  doc_in: BytesIO | Path | str | bytes,
@@ -89,21 +64,17 @@ class CryptoPdf:
 
         If *doc_in* is encrypted, the decryption password must be provided in *doc_pwd*.
 
-        :param doc_in: a digitally signed, *PAdES* conformant, PDF file
-        :param doc_pwd: optional password for file decryption
+        :param doc_in: a digitally signed, *PAdES* compliant, PDF file
+        :param doc_pwd: optional password for *doc_in* decryption
         :param errors: incidental errors (may be non-empty)
         """
-        # declare/initialize the instance variables
-        self.signatures: list[CryptoPdf.SignatureInfo] = []
-        self.pdf_bytes: bytes
-
-        # retrieve the PDF data
-        self.pdf_bytes = file_get_data(file_data=doc_in)
+        super().__init__(doc_in=doc_in,
+                         p7x_in=None)
 
         # define a local errors list
         curr_errors: list[str] = []
 
-        pdf_stream: BytesIO = BytesIO(initial_bytes=self.pdf_bytes)
+        pdf_stream: BytesIO = BytesIO(initial_bytes=self.payload_bytes)
         pdf_stream.seek(0)
 
         # retrieve the signature fields
@@ -120,8 +91,8 @@ class CryptoPdf:
             # extract the payload
             byte_range: ArrayObject = sig_dict.get("/ByteRange")
             from_1, len_1, from_2, len_2 = byte_range
-            payload_range: tuple[int, int, int, int] = (int(from_1), int(len_1), int(from_2), int(len_2))
-            payload: bytes = self.pdf_bytes[from_1:from_1+len_1] + self.pdf_bytes[from_2:from_2+len_2]
+            ranges: tuple[int, int, int, int] = (int(from_1), int(len_1), int(from_2), int(len_2))
+            payload: bytes = self.payload_bytes[from_1:from_1+len_1] + self.payload_bytes[from_2:from_2+len_2]
 
             # extract signature data (CMS structure)
             sig_obj: ByteStringObject = contents.get_object()
@@ -181,7 +152,7 @@ class CryptoPdf:
 
             # build the signature's crypto data and save it
             sig_info: CryptoPdf.SignatureInfo = CryptoPdf.SignatureInfo(
-                payload_range=payload_range,
+                payload_ranges=[(ranges[0], ranges[1]), (ranges[2], ranges[3])],
                 payload_hash=computed_hash,
                 hash_algorithm=hash_algorithm,
                 signature=signature,
@@ -206,169 +177,6 @@ class CryptoPdf:
 
         if curr_errors and isinstance(errors, list):
             errors.extend(curr_errors)
-
-    def get_digest(self,
-                   fmt: Literal["base64", "bytes"],
-                   sig_seq: int = 0) -> str | bytes:
-        """
-        Retrieve the digest associated with a reference signature, as specified in *sig_seq* and *fmt*.
-
-        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
-        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
-        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
-        of available signatures, the latest signature is selected.
-
-        :param fmt: the format to use
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the digest, as per *fmt* (Base64-encoded or raw bytes)
-        """
-        sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        return sig_info.payload_hash \
-            if fmt == "bytes" else base64.b64encode(s=sig_info.payload_hash).decode(encoding="utf-8")
-
-    def get_signature(self,
-                      fmt: Literal["base64", "bytes"],
-                      sig_seq: int = 0) -> str | bytes:
-        """
-        Retrieve the signature associated with a reference signature, as specified in *sig_seq* and *fmt*.
-
-        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
-        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
-        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
-        of available signatures, the latest signature is selected.
-
-        :param fmt: the format to use
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the signature, as per *fmt* (Base64-encoded or raw bytes)
-        """
-        sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        return sig_info.signature \
-            if fmt == "bytes" else base64.b64encode(s=sig_info.signature).decode(encoding="utf-8")
-
-    def get_public_key(self,
-                       fmt: Literal["base64", "der", "pem"],
-                       sig_seq: int = 0) -> str | bytes:
-        """
-        Retrieve the public key associated with a reference signature, as specified in *sig_seq* and *fmt*.
-
-        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
-        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
-        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
-        of available signatures, the latest signature is selected.
-
-        These are the supported formats:
-            - *der*: the raw binary representation of the key
-            - *pem*: the Base64-encoded key with headers and line breaks
-            - *base64*: the Base64-encoded DER bytes
-
-        :param fmt: the format to use
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the public key, as per *fmt* (*str* or *bytes*)
-        """
-        # declare the return variable
-        result: str | bytes
-
-        sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        if fmt == "pem":
-            result = sig_info.public_key.public_bytes(encoding=Encoding.PEM,
-                                                      format=PublicFormat.SubjectPublicKeyInfo)
-            result = result.decode(encoding="utf-8")
-        else:
-            result = sig_info.public_key.public_bytes(encoding=Encoding.DER,
-                                                      format=PublicFormat.SubjectPublicKeyInfo)
-            if fmt == "base64":
-                result = base64.b64encode(s=result).decode(encoding="utf-8")
-
-        return result
-
-    def get_cert_chain(self,
-                       sig_seq: int = 0) -> list[bytes]:
-        """
-        Retrieve the certificate chain associated with a reference signature, as specified in *sig_seq*.
-
-        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
-        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
-        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
-        of available signatures, the latest signature is selected.
-
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the signature, as per *fmt* (Base64-encoded or raw bytes)
-        """
-        sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        return sig_info.cert_chain
-
-    def get_metadata(self,
-                     sig_seq: int = 0) -> dict[str, Any]:
-        """
-        Retrieve the certificate chain metadata associated with a reference signature, as specified in *sig_seq*.
-
-        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
-        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
-        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
-        of available signatures, the latest signature is selected.
-
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the certificate chain metadata associated with the reference signature
-        """
-        # declare the return variable
-        result: dict[str, Any]
-
-        sig_info: CryptoPdf.SignatureInfo = self.__get_sig_info(sig_seq=sig_seq)
-        cert: x509.Certificate = sig_info.signer_cert
-
-        result: dict[str, Any] = {
-            "signer-cn": sig_info.signer_cn,
-            "hash-algorithm": sig_info.hash_algorithm,
-            "signature-algorithm": sig_info.signature_algorithm,
-            "signature-timestamp": sig_info.signature_timestamp,
-            "cert-sn": sig_info.cert_sn,
-            "cert-not-before": cert.not_valid_before,
-            "cert-not-after": cert.not_valid_after,
-            "cert-subject": cert.subject.rfc4514_string(),
-            "cert-issuer": cert.issuer.rfc4514_string(),
-            "cert-chain-length": len(sig_info.cert_chain)
-        }
-        # add the TSA details
-        if sig_info.tsa_sn:
-            result.update({
-                "tsa-timestamp": sig_info.tsa_timestamp,
-                "tsa-policy": sig_info.tsa_policy,
-                "tsa-sn": sig_info.tsa_sn
-            })
-
-        return result
-
-    def __get_sig_info(self,
-                       sig_seq: int) -> CryptoPdf.SignatureInfo:
-        """
-        Retrieve the signature metadata of a reference signature, as specified in *sig_seq*.
-
-        The natural ordering of the signatures in a *PAdES* compliant, digitally signed, PDF file is the
-        chronological *latest-first* order. The value of *sig_seq* is subtracted from the ordinal position
-        of the last signature in the signatures list, to yield the ordinal position of the reference signature.
-        It defaults to *0*, indicating the latest signature. If the operation yields a number out of the range
-        of available signatures, the latest signature is selected.
-
-        :param sig_seq: the relative ordinal position of the reference signature
-        :return: the reference signature's metadata
-
-        """
-        sig_ordinal: int = max(-1, len(self.signatures) - sig_seq - 1)
-        return self.signatures[sig_ordinal]
-
-    @staticmethod
-    def set_logger(logger: Logger) -> None:
-        """
-        Configure the logger to be used in this module's operations.
-
-        :param logger: the operations logger
-        """
-        CryptoPdf.logger = logger
 
     @staticmethod
     def sign(doc_in: BytesIO | Path | str | bytes,
@@ -548,3 +356,12 @@ class CryptoPdf:
                 errors.append(msg)
 
         return result
+
+    @staticmethod
+    def set_logger(logger: Logger) -> None:
+        """
+        Configure the logger to be used in this module's operations.
+
+        :param logger: the operations logger
+        """
+        CryptoPdf.logger = logger
