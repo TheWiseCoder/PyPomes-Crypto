@@ -4,6 +4,7 @@ import sys
 from asn1crypto import cms, pem
 from contextlib import suppress
 from Crypto.Cipher import AES
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_ecb import EcbMode
 from Crypto.Util.Padding import pad, unpad
 from cryptography import x509
@@ -144,7 +145,7 @@ def crypto_encrypt(plaintext: BytesIO | Path | str | bytes,
     result: bytes | None = None
 
     # obtain the data for encryption
-    plaindata: bytes = file_get_data(file_data=plaintext)
+    plaindata: bytes = file_get_data(plaintext)
 
     # build the cipher
     cipher: EcbMode = AES.new(key=key,
@@ -194,7 +195,7 @@ def crypto_decrypt(ciphertext: BytesIO | Path | str | bytes,
     result: bytes | None = None
 
     # obtain the data for decryption
-    cipherdata: bytes = file_get_data(file_data=ciphertext)
+    cipherdata: bytes = file_get_data(ciphertext)
 
     # build the cipher
     cipher: AES = AES.new(key=key,
@@ -290,7 +291,7 @@ def crypto_verify_p7x(p7x_in: BytesIO | Path | str | bytes,
     curr_errors: list[str] = []
 
     # retrieve the certificate raw bytes (if PEM, convert to DER)
-    p7s_bytes: bytes = file_get_data(file_data=p7x_in)
+    p7s_bytes: bytes = file_get_data(p7x_in)
     if pem.detect(p7s_bytes):
         _, _, p7s_bytes = pem.unarmor(pem_bytes=p7s_bytes)
 
@@ -302,7 +303,7 @@ def crypto_verify_p7x(p7x_in: BytesIO | Path | str | bytes,
 
     # signatures in PKCS#7 share the same payload
     payload: bytes = _cms_get_payload(signed_data=signed_data,
-                                      payload_bytes=file_get_data(file_data=doc_in),
+                                      payload_bytes=file_get_data(doc_in),
                                       errors=curr_errors,
                                       logger=logger) if signed_data else None
 
@@ -388,7 +389,7 @@ def crypto_verify_pdf(doc_in: BytesIO | Path | str | bytes,
     result: bool | None = True
 
     # retrieve the PDF data
-    pdf_bytes: bytes = file_get_data(file_data=doc_in)
+    pdf_bytes: bytes = file_get_data(doc_in)
 
     # define a local errors list
     curr_errors: list[str] = []

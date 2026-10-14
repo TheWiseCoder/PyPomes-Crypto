@@ -213,8 +213,8 @@ class CryptoPkcs7(CryptoBase):
         curr_errors: list[str] = []
 
         # retrieve the document and certificate raw bytes
-        doc_bytes: bytes = file_get_data(file_data=doc_in)
-        pfx_bytes: bytes = file_get_data(file_data=pfx_in)
+        doc_bytes: bytes = file_get_data(doc_in)
+        pfx_bytes: bytes = file_get_data(pfx_in)
 
         # load A1 certificate and private key from the raw certificate data
         pwd_bytes = pfx_pwd.encode() if isinstance(pfx_pwd, str) else pfx_pwd

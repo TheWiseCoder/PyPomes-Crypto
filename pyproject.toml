@@ -1,12 +1,12 @@
 [build-system]
 requires = [
-    "hatchling>=1.28.0"
+    "hatchling>=1.32.4"
 ]
 build-backend = "hatchling.build"
 
 [project]
 name = "pypomes_crypto"
-version = "0.8.7"
+version = "0.8.8"
 authors = [
   { name="GT Nunes", email="wisecoder01@gmail.com" }
 ]
@@ -21,14 +21,14 @@ classifiers = [
 dependencies = [
     "argon2-cffi>=25.1.0",
     "asn1crypto>=1.5.1",
-    "cryptography>=46.0.3",
+    "cryptography>=50.0.2",
     "passlib>=1.7.4",
-    "pycryptodome>=3.23.0",
-    "pyHanko>=0.32.0",
-    "PyJWT>=2.10.1",
+    "pycryptodome>=4.0.0",
+    "pyHanko>=0.37.0",
+    "PyJWT>=2.15.1",
 	"PyPDF2>=3.0.1",
-    "pypomes_core>=3.0.8",
-    "requests>=2.32.5"
+    "pypomes_core>=3.3.2",
+    "requests>=2.34.2"
 ]
 
 [project.urls]

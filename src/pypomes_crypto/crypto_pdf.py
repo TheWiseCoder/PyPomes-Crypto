@@ -228,7 +228,7 @@ class CryptoPdf(CryptoBase):
         pwd_bytes = pfx_pwd.encode() if isinstance(pfx_pwd, str) else pfx_pwd
         # PyHanko's SimpleSigner requires a path to a file
         if not isinstance(pfx_in, Path):
-            pfx_bytes: bytes = file_get_data(file_data=pfx_in)
+            pfx_bytes: bytes = file_get_data(pfx_in)
             is_temp = True
             with tempfile.NamedTemporaryFile(mode="wb",
                                              delete=False) as tmp:
@@ -264,7 +264,7 @@ class CryptoPdf(CryptoBase):
                                               timeout=None)
 
             # open PDF file for incremental signing
-            doc_in = file_get_data(file_data=doc_in)
+            doc_in = file_get_data(doc_in)
             pdf_stream: BytesIO = BytesIO(initial_bytes=doc_in)
 
             pdf_stream.seek(0)

@@ -74,13 +74,13 @@ class CryptoBase:
 
         # retrieve the PKCS#7 file data (if PEM, convert to DER)
         if p7x_in:
-            self.p7x_bytes = file_get_data(file_data=p7x_in)
+            self.p7x_bytes = file_get_data(p7x_in)
             if pem.detect(self.p7x_bytes):
                 _, _, self.p7x_bytes = pem.unarmor(pem_bytes=self.p7x_bytes)
 
         # retrieve the input doc file data
         if doc_in:
-            self.payload_bytes = file_get_data(file_data=doc_in)
+            self.payload_bytes = file_get_data(doc_in)
 
     def get_digest(self,
                    fmt: Literal["base64", "bytes"],

@@ -1,13 +1,22 @@
 import sys
 from Crypto.Cipher import AES
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_cbc import CbcMode
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_ccm import CcmMode
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_ecb import EcbMode
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_cfb import CfbMode
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_ctr import CtrMode
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_eax import EaxMode
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_ofb import OfbMode
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_openpgp import OpenPgpMode
+# noinspection PyProtectedMember
 from Crypto.Cipher._mode_siv import SivMode
 from Crypto.Random import get_random_bytes
 from enum import StrEnum
@@ -98,7 +107,7 @@ def crypto_aes_encrypt(plaintext: Path | str | bytes,
     result: tuple[bytes, bytes, bytes] | None = None
 
     # obtain the data for encryption
-    plaindata: bytes = file_get_data(file_data=plaintext)
+    plaindata: bytes = file_get_data(plaintext)
 
     # build the cypher
     # noinspection PyTypeChecker
@@ -167,7 +176,7 @@ def crypto_aes_decrypt(ciphertext: Path | str | bytes,
     result: bytes | None = None
 
     # obtain the data for decryption
-    cipherdata: bytes = file_get_data(file_data=ciphertext)
+    cipherdata: bytes = file_get_data(ciphertext)
 
     # build the cypher
     # noinspection PyTypeChecker
